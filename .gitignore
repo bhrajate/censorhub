@@ -1,0 +1,12 @@
+bin/
+vendor/
+*.exe
+*.test
+*.out
+coverage.*
+.env
+.idea/
+.vscode/
+*.swp
+*.swo
+.claude

@@ -1,0 +1,97 @@
+version: "3.8"
+
+services:
+  censorhub:
+    build:
+      context: ../..
+      dockerfile: deployments/docker/Dockerfile
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - APP_ENV=docker
+      - CENSORHUB_DATABASE_DSN=root:root@tcp(mysql:3306)/censorhub?charset=utf8mb4&parseTime=True&loc=Local
+      - CENSORHUB_REDIS_ADDR=redis:6379
+      - CENSORHUB_TRACE_ENDPOINT=jaeger:4317
+    volumes:
+      - ../../configs:/etc/censorhub/configs:ro
+    restart: unless-stopped
+    networks:
+      - censorhub
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: censorhub
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - censorhub
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - censorhub
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"  # Jaeger UI
+      - "4317:4317"    # OTLP gRPC
+    networks:
+      - censorhub
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9093:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    networks:
+      - censorhub
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - censorhub
+
+volumes:
+  mysql_data:
+  redis_data:
+  grafana_data:
+
+networks:
+  censorhub:
+    driver: bridge

@@ -1,0 +1,26 @@
+# 预发布环境配置
+database:
+  dsn: "${CENSORHUB_DATABASE_DSN}"
+  max_open_conns: 50
+  max_idle_conns: 10
+
+redis:
+  addr: "${CENSORHUB_REDIS_ADDR}"
+  password: "${CENSORHUB_REDIS_PASSWORD}"
+  pool_size: 50
+
+log:
+  level: info
+  format: json
+
+trace:
+  endpoint: "jaeger-collector.observability:4317"
+  sample_rate: 0.5
+
+ratelimit:
+  requests_per_second: 500
+  burst: 1000
+
+auth:
+  api_keys:
+    - "${CENSORHUB_API_KEY}"

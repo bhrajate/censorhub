@@ -1,0 +1,8 @@
+bin/
+vendor/
+.git/
+*.md
+*.test
+coverage.*
+.golangci.yml
+deployments/kubernetes/

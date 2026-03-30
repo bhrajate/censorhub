@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package censor.v1;
+
+option go_package = "github.com/bhrajate/censorhub/api/proto/censor/v1;censorv1";
+
+service CensorService {
+  rpc Detect(FilterRequest) returns (FilterResponse);
+  rpc Replace(FilterRequest) returns (FilterResponse);
+  rpc BatchDetect(BatchFilterRequest) returns (BatchFilterResponse);
+}
+
+message FilterRequest {
+  string text = 1;
+}
+
+message FilterResponse {
+  string original = 1;
+  string filtered = 2;
+  bool is_hit = 3;
+  int32 hit_count = 4;
+  repeated MatchItem matches = 5;
+  int32 risk_level = 6;
+  int64 cost_ms = 7;
+}
+
+message MatchItem {
+  string word = 1;
+  int32 position = 2;
+  int32 end_position = 3;
+  string category = 4;
+  int32 level = 5;
+}
+
+message BatchFilterRequest {
+  repeated string texts = 1;
+}
+
+message BatchFilterResponse {
+  repeated FilterResponse results = 1;
+  int32 total = 2;
+  int32 hit_num = 3;
+}

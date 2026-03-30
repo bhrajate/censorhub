@@ -1,0 +1,41 @@
+server:
+  http:
+    addr: ":8080"
+    read_timeout: 10s
+    write_timeout: 10s
+  grpc:
+    addr: ":9090"
+
+database:
+  driver: mysql
+  dsn: "root:root@tcp(127.0.0.1:3306)/censorhub?charset=utf8mb4&parseTime=True&loc=Local"
+  max_open_conns: 100
+  max_idle_conns: 10
+  conn_max_lifetime: 3600s
+
+redis:
+  addr: "127.0.0.1:6379"
+  password: ""
+  db: 0
+  pool_size: 100
+
+cache:
+  local_ttl: 5m
+  redis_ttl: 30m
+
+log:
+  level: info
+  format: json
+  output: stdout
+
+trace:
+  endpoint: "localhost:4317"
+  sample_rate: 0.1
+
+ratelimit:
+  requests_per_second: 1000
+  burst: 2000
+
+auth:
+  api_keys:
+    - "censorhub-default-key"

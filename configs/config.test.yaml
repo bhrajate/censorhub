@@ -1,0 +1,16 @@
+# 测试环境配置
+database:
+  dsn: "root:root@tcp(127.0.0.1:3306)/censorhub_test?charset=utf8mb4&parseTime=True&loc=Local"
+
+redis:
+  db: 1  # 使用不同 DB 隔离
+
+log:
+  level: warn
+  format: json
+
+trace:
+  endpoint: ""  # 测试环境关闭追踪
+
+auth:
+  api_keys: []

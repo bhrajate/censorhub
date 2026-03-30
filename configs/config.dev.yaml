@@ -1,0 +1,11 @@
+# 开发环境配置（覆盖 config.yaml 中的差异项）
+log:
+  level: debug
+  format: console
+
+trace:
+  endpoint: "localhost:4317"
+  sample_rate: 1.0
+
+auth:
+  api_keys: []  # 开发环境关闭认证
