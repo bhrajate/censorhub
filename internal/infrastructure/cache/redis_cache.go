@@ -33,18 +33,29 @@ func (c *RedisCache) Delete(ctx context.Context, key string) error {
 	return c.client.Del(ctx, key).Err()
 }
 
-// DeleteByPrefix 按前缀批量删除
+// DeleteByPrefix 按前缀批量删除，使用 Pipeline + UNLINK 提升效率
 func (c *RedisCache) DeleteByPrefix(ctx context.Context, prefix string) error {
-	iter := c.client.Scan(ctx, 0, prefix+"*", 100).Iterator()
-	var keys []string
-	for iter.Next(ctx) {
-		keys = append(keys, iter.Val())
-	}
-	if err := iter.Err(); err != nil {
-		return err
-	}
-	if len(keys) > 0 {
-		return c.client.Del(ctx, keys...).Err()
+	var cursor uint64
+	for {
+		keys, nextCursor, err := c.client.Scan(ctx, cursor, prefix+"*", 1000).Result()
+		if err != nil {
+			return err
+		}
+
+		if len(keys) > 0 {
+			pipe := c.client.Pipeline()
+			for _, key := range keys {
+				pipe.Unlink(ctx, key)
+			}
+			if _, err := pipe.Exec(ctx); err != nil {
+				return err
+			}
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
 	}
 	return nil
 }

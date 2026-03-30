@@ -20,14 +20,10 @@ func authMiddleware(apiKeys []string) gin.HandlerFunc {
 		}
 
 		apiKey := c.GetHeader("X-API-Key")
-		if apiKey == "" {
-			apiKey = c.Query("api_key")
-		}
-
 		if !keySet[apiKey] {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{
 				"code":    10008,
-				"message": "unauthorized: invalid or missing API key",
+				"message": "unauthorized: invalid or missing X-API-Key header",
 			})
 			return
 		}

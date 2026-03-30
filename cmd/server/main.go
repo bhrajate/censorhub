@@ -90,8 +90,12 @@ func main() {
 	// 过滤引擎
 	engine := algorithm.NewACFilterEngine()
 
+	// 生命周期 context，用于控制后台协程退出
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// 缓存
-	localCache := cache.NewLocalCache(cfg.Cache.LocalTTL)
+	localCache := cache.NewLocalCache(ctx, cfg.Cache.LocalTTL)
 	redisCache := cache.NewRedisCache(rdb, cfg.Cache.RedisTTL)
 	multiCache := cache.NewMultiLevelCache(localCache, redisCache)
 
@@ -106,7 +110,7 @@ func main() {
 	}
 
 	// 应用服务
-	filterAppService := service.NewFilterAppService(engine, strategies, log)
+	filterAppService := service.NewFilterAppService(engine, strategies, multiCache, log)
 	wordAppService := service.NewWordAppService(wordRepo, engine, multiCache, pubsub, log)
 
 	// 7. 初始化引擎（从 DB 加载词条）
@@ -115,9 +119,6 @@ func main() {
 	}
 
 	// 8. 订阅热更新通知
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
 	pubsub.SubscribeWordUpdate(ctx, func() {
 		words, err := wordRepo.FindAllActive(context.Background())
 		if err != nil {
@@ -134,7 +135,7 @@ func main() {
 	// 9. HTTP handler
 	filterHandler := handler.NewFilterHandler(filterAppService)
 	wordHandler := handler.NewWordHandler(wordAppService)
-	healthHandler := handler.NewHealthHandler(db, filterAppService)
+	healthHandler := handler.NewHealthHandler(db, rdb, filterAppService)
 	mw := middleware.NewMiddleware(cfg, log)
 
 	router := httpserver.NewRouter(filterHandler, wordHandler, healthHandler, mw)
@@ -161,6 +162,7 @@ func main() {
 		Handler:      router,
 		ReadTimeout:  cfg.Server.HTTP.ReadTimeout,
 		WriteTimeout: cfg.Server.HTTP.WriteTimeout,
+		IdleTimeout:  cfg.Server.HTTP.IdleTimeout,
 	}
 
 	go func() {

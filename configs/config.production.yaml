@@ -25,3 +25,7 @@ ratelimit:
 auth:
   api_keys:
     - "${CENSORHUB_API_KEY}"
+
+cors:
+  allowed_origins:
+    - "https://example.com"  # 替换为实际的前端域名

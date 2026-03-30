@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"time"
 
 	"go.uber.org/zap"
 	"gorm.io/gorm"
@@ -175,10 +176,17 @@ func (s *WordAppService) List(ctx context.Context, req *dto.WordListRequest) (*d
 
 func (s *WordAppService) Import(ctx context.Context, req *dto.ImportRequest) (*dto.ImportResponse, error) {
 	words := make([]*entity.SensitiveWord, 0, len(req.Words))
-	for _, w := range req.Words {
+	var failures []dto.ImportFailure
+
+	for i, w := range req.Words {
 		word := assembler.CreateDTOToEntity(&w)
 		if err := word.Validate(); err != nil {
-			continue // 跳过无效词条
+			failures = append(failures, dto.ImportFailure{
+				Index:  i,
+				Word:   w.Text,
+				Reason: err.Error(),
+			})
+			continue
 		}
 		words = append(words, word)
 	}
@@ -193,7 +201,8 @@ func (s *WordAppService) Import(ctx context.Context, req *dto.ImportRequest) (*d
 	return &dto.ImportResponse{
 		Total:    len(req.Words),
 		Imported: imported,
-		Skipped:  len(req.Words) - imported,
+		Skipped:  len(failures),
+		Failures: failures,
 	}, nil
 }
 
@@ -232,7 +241,11 @@ func (s *WordAppService) Export(ctx context.Context, category string) ([]byte, e
 // triggerRebuild 触发引擎热更新
 func (s *WordAppService) triggerRebuild(ctx context.Context) {
 	go func() {
-		words, err := s.repo.FindAllActive(context.Background())
+		// 使用带超时的 context，确保优雅关停时不会无限等待
+		rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		words, err := s.repo.FindAllActive(rebuildCtx)
 		if err != nil {
 			s.logger.Error("failed to load words for rebuild", zap.Error(err))
 			return

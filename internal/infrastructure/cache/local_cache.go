@@ -1,6 +1,8 @@
 package cache
 
 import (
+	"context"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,14 +19,14 @@ type LocalCache struct {
 	ttl   time.Duration
 }
 
-// NewLocalCache 创建本地缓存
-func NewLocalCache(ttl time.Duration) *LocalCache {
+// NewLocalCache 创建本地缓存，ctx 取消时清理协程自动退出
+func NewLocalCache(ctx context.Context, ttl time.Duration) *LocalCache {
 	lc := &LocalCache{
 		items: make(map[string]*cacheItem),
 		ttl:   ttl,
 	}
 	// 后台清理过期缓存
-	go lc.cleanup()
+	go lc.cleanup(ctx)
 	return lc
 }
 
@@ -58,6 +60,17 @@ func (c *LocalCache) Delete(key string) {
 	delete(c.items, key)
 }
 
+// DeleteByPrefix 按前缀删除匹配的缓存条目
+func (c *LocalCache) DeleteByPrefix(prefix string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for k := range c.items {
+		if strings.HasPrefix(k, prefix) {
+			delete(c.items, k)
+		}
+	}
+}
+
 // InvalidateAll 清空所有缓存
 func (c *LocalCache) InvalidateAll() {
 	c.mu.Lock()
@@ -65,17 +78,36 @@ func (c *LocalCache) InvalidateAll() {
 	c.items = make(map[string]*cacheItem)
 }
 
-func (c *LocalCache) cleanup() {
+// maxEvictPerCycle 每轮清理最多淘汰的条目数，避免长时间持锁
+const maxEvictPerCycle = 1000
+
+func (c *LocalCache) cleanup(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
-	for range ticker.C {
-		c.mu.Lock()
-		now := time.Now()
-		for k, v := range c.items {
-			if now.After(v.expiredAt) {
-				delete(c.items, k)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.evictExpired()
+		}
+	}
+}
+
+// evictExpired 分批清理过期条目，每次最多清理 maxEvictPerCycle 个
+func (c *LocalCache) evictExpired() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := time.Now()
+	evicted := 0
+	for k, v := range c.items {
+		if now.After(v.expiredAt) {
+			delete(c.items, k)
+			evicted++
+			if evicted >= maxEvictPerCycle {
+				break
 			}
 		}
-		c.mu.Unlock()
 	}
 }

@@ -35,7 +35,7 @@ func (m *Middleware) Logger() gin.HandlerFunc {
 
 // CORS 跨域
 func (m *Middleware) CORS() gin.HandlerFunc {
-	return corsMiddleware()
+	return corsMiddleware(m.cfg.CORS.AllowedOrigins)
 }
 
 // RateLimit 限流
@@ -56,4 +56,9 @@ func (m *Middleware) Metrics() gin.HandlerFunc {
 // Tracing 链路追踪
 func (m *Middleware) Tracing() gin.HandlerFunc {
 	return tracingMiddleware()
+}
+
+// BodyLimit 请求体大小限制
+func (m *Middleware) BodyLimit() gin.HandlerFunc {
+	return bodyLimitMiddleware(m.cfg.Server.HTTP.MaxBodySize)
 }

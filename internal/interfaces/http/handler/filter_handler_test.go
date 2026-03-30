@@ -32,7 +32,7 @@ func setupFilterHandler() (*FilterHandler, *gin.Engine) {
 		valueobject.StrategyHighlight: algorithm.NewHighlightStrategy(),
 	}
 
-	filterService := service.NewFilterAppService(engine, strategies, zap.NewNop())
+	filterService := service.NewFilterAppService(engine, strategies, nil, zap.NewNop())
 	h := NewFilterHandler(filterService)
 
 	r := gin.New()

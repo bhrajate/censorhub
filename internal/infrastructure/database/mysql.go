@@ -37,6 +37,9 @@ func NewMySQL(cfg *config.Config, logger *zap.Logger) (*gorm.DB, func(), error) 
 	} else {
 		sqlDB.SetConnMaxLifetime(time.Hour)
 	}
+	if cfg.Database.ConnMaxIdleTime > 0 {
+		sqlDB.SetConnMaxIdleTime(cfg.Database.ConnMaxIdleTime)
+	}
 
 	logger.Info("MySQL connected", zap.String("dsn", maskDSN(cfg.Database.DSN)))
 

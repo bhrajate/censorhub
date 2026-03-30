@@ -20,6 +20,7 @@ type Config struct {
 	Trace     TraceConfig     `mapstructure:"trace"`
 	RateLimit RateLimitConfig `mapstructure:"ratelimit"`
 	Auth      AuthConfig      `mapstructure:"auth"`
+	CORS      CORSConfig      `mapstructure:"cors"`
 }
 
 type ServerConfig struct {
@@ -31,6 +32,8 @@ type HTTPConfig struct {
 	Addr         string        `mapstructure:"addr"`
 	ReadTimeout  time.Duration `mapstructure:"read_timeout"`
 	WriteTimeout time.Duration `mapstructure:"write_timeout"`
+	IdleTimeout  time.Duration `mapstructure:"idle_timeout"`
+	MaxBodySize  int64         `mapstructure:"max_body_size"` // 最大请求体大小（字节），0 表示使用默认值
 }
 
 type GRPCConfig struct {
@@ -43,6 +46,7 @@ type DatabaseConfig struct {
 	MaxOpenConns    int           `mapstructure:"max_open_conns"`
 	MaxIdleConns    int           `mapstructure:"max_idle_conns"`
 	ConnMaxLifetime time.Duration `mapstructure:"conn_max_lifetime"`
+	ConnMaxIdleTime time.Duration `mapstructure:"conn_max_idle_time"`
 }
 
 type RedisConfig struct {
@@ -75,6 +79,10 @@ type RateLimitConfig struct {
 
 type AuthConfig struct {
 	APIKeys []string `mapstructure:"api_keys"`
+}
+
+type CORSConfig struct {
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
 }
 
 // Env 环境标识
@@ -200,11 +208,20 @@ func setDefaults(cfg *Config) {
 	if cfg.Server.HTTP.WriteTimeout == 0 {
 		cfg.Server.HTTP.WriteTimeout = 10 * time.Second
 	}
+	if cfg.Server.HTTP.IdleTimeout == 0 {
+		cfg.Server.HTTP.IdleTimeout = 60 * time.Second
+	}
+	if cfg.Server.HTTP.MaxBodySize == 0 {
+		cfg.Server.HTTP.MaxBodySize = 10 << 20 // 10MB
+	}
 	if cfg.Database.MaxOpenConns == 0 {
 		cfg.Database.MaxOpenConns = 100
 	}
 	if cfg.Database.MaxIdleConns == 0 {
-		cfg.Database.MaxIdleConns = 10
+		cfg.Database.MaxIdleConns = 25 // ~25% of MaxOpenConns
+	}
+	if cfg.Database.ConnMaxIdleTime == 0 {
+		cfg.Database.ConnMaxIdleTime = 5 * time.Minute
 	}
 	if cfg.Cache.LocalTTL == 0 {
 		cfg.Cache.LocalTTL = 5 * time.Minute

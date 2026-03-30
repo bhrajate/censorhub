@@ -21,6 +21,7 @@ func NewRouter(
 	// 全局中间件
 	r.Use(mw.Recovery())
 	r.Use(mw.RequestID())
+	r.Use(mw.BodyLimit())
 	r.Use(mw.Logger())
 	r.Use(mw.CORS())
 	r.Use(mw.Metrics())

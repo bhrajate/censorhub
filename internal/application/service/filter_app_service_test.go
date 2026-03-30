@@ -25,7 +25,7 @@ func setupFilterService() *FilterAppService {
 		valueobject.StrategyHighlight: algorithm.NewHighlightStrategy(),
 	}
 
-	return NewFilterAppService(engine, strategies, zap.NewNop())
+	return NewFilterAppService(engine, strategies, nil, zap.NewNop())
 }
 
 func TestFilterAppService_Detect_Hit(t *testing.T) {

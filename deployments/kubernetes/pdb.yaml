@@ -1,0 +1,12 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: censorhub-pdb
+  namespace: censorhub
+  labels:
+    app: censorhub
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: censorhub

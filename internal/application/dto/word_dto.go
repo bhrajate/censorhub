@@ -56,7 +56,15 @@ type ImportRequest struct {
 
 // ImportResponse 批量导入响应
 type ImportResponse struct {
-	Total    int `json:"total"`
-	Imported int `json:"imported"`
-	Skipped  int `json:"skipped"`
+	Total    int             `json:"total"`
+	Imported int             `json:"imported"`
+	Skipped  int             `json:"skipped"`
+	Failures []ImportFailure `json:"failures,omitempty"`
+}
+
+// ImportFailure 导入失败详情
+type ImportFailure struct {
+	Index  int    `json:"index"`
+	Word   string `json:"word"`
+	Reason string `json:"reason"`
 }
