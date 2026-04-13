@@ -43,7 +43,11 @@ func main() {
 	}
 
 	// 2. 初始化日志
-	log, err := logger.NewLogger(cfg)
+	log, err := logger.NewLogger(logger.Config{
+		Level:  cfg.Log.Level,
+		Format: cfg.Log.Format,
+		Output: cfg.Log.Output,
+	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "failed to init logger: %v\n", err)
 		os.Exit(1)

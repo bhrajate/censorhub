@@ -5,14 +5,19 @@ import (
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-
-	"github.com/bhrajate/censorhub/internal/infrastructure/config"
 )
 
+// Config 日志配置
+type Config struct {
+	Level  string // 日志级别: debug, info, warn, error
+	Format string // 输出格式: json, console
+	Output string // 输出目标: stdout 或文件路径
+}
+
 // NewLogger 创建 Zap 结构化日志
-func NewLogger(cfg *config.Config) (*zap.Logger, error) {
+func NewLogger(cfg Config) (*zap.Logger, error) {
 	level := zapcore.InfoLevel
-	if err := level.UnmarshalText([]byte(cfg.Log.Level)); err != nil {
+	if err := level.UnmarshalText([]byte(cfg.Level)); err != nil {
 		level = zapcore.InfoLevel
 	}
 
@@ -22,17 +27,17 @@ func NewLogger(cfg *config.Config) (*zap.Logger, error) {
 	encoderConfig.EncodeLevel = zapcore.LowercaseLevelEncoder
 
 	var encoder zapcore.Encoder
-	if cfg.Log.Format == "console" {
+	if cfg.Format == "console" {
 		encoder = zapcore.NewConsoleEncoder(encoderConfig)
 	} else {
 		encoder = zapcore.NewJSONEncoder(encoderConfig)
 	}
 
 	var writer zapcore.WriteSyncer
-	if cfg.Log.Output == "stdout" || cfg.Log.Output == "" {
+	if cfg.Output == "stdout" || cfg.Output == "" {
 		writer = zapcore.AddSync(os.Stdout)
 	} else {
-		file, err := os.OpenFile(cfg.Log.Output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		file, err := os.OpenFile(cfg.Output, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			return nil, err
 		}
