@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
@@ -21,6 +22,8 @@ import (
 	pkgerrors "github.com/bhrajate/censorhub/pkg/errors"
 )
 
+const rebuildDebounceDelay = 500 * time.Millisecond
+
 // WordAppService 词条管理应用服务
 type WordAppService struct {
 	repo   repository.WordRepository
@@ -28,6 +31,9 @@ type WordAppService struct {
 	cache  *cache.MultiLevelCache
 	pubsub *mq.RedisPubSub
 	logger *zap.Logger
+
+	rebuildTimer *time.Timer // 防抖定时器
+	rebuildMu    sync.Mutex  // 保护 rebuildTimer
 }
 
 // NewWordAppService 创建词条管理应用服务
@@ -238,11 +244,21 @@ func (s *WordAppService) Export(ctx context.Context, category string) ([]byte, e
 	return buf.Bytes(), nil
 }
 
-// triggerRebuild 触发引擎热更新
+// triggerRebuild 触发引擎热更新（防抖：500ms 内多次调用只执行一次）
 func (s *WordAppService) triggerRebuild(ctx context.Context) {
-	go func() {
-		// 使用带超时的 context，确保优雅关停时不会无限等待
-		rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// 立即清除缓存，确保后续请求不会命中旧缓存
+	s.cache.InvalidateByPrefix(ctx, "words:")
+
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+
+	// 重置防抖定时器：如果 500ms 内再次触发，取消前一次，重新计时
+	if s.rebuildTimer != nil {
+		s.rebuildTimer.Stop()
+	}
+
+	s.rebuildTimer = time.AfterFunc(rebuildDebounceDelay, func() {
+		rebuildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
 		words, err := s.repo.FindAllActive(rebuildCtx)
@@ -255,15 +271,12 @@ func (s *WordAppService) triggerRebuild(ctx context.Context) {
 			return
 		}
 		s.logger.Info("engine rebuilt", zap.Int("word_count", s.engine.WordCount()))
-	}()
 
-	// 通知其他实例
-	if err := s.pubsub.PublishWordUpdate(ctx); err != nil {
-		s.logger.Error("failed to publish word update", zap.Error(err))
-	}
-
-	// 清除缓存
-	s.cache.InvalidateByPrefix(ctx, "words:")
+		// 重建完成后通知其他实例
+		if err := s.pubsub.PublishWordUpdate(rebuildCtx); err != nil {
+			s.logger.Error("failed to publish word update", zap.Error(err))
+		}
+	})
 }
 
 // InitEngine 应用启动时初始化引擎
