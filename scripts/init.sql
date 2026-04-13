@@ -27,3 +27,48 @@ CREATE TABLE IF NOT EXISTS `sensitive_words` (
     KEY `idx_status` (`status`),
     KEY `idx_tag` (`tag`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='敏感词表';
+
+-- -------------------------------------------
+-- 测试数据
+-- -------------------------------------------
+INSERT INTO `sensitive_words` (`text`, `category`, `level`, `status`, `tag`) VALUES
+-- 涉政类 (politics)
+('颠覆政权',     'politics', 4, 1, '政治安全'),
+('分裂国家',     'politics', 4, 1, '政治安全'),
+('游行示威',     'politics', 3, 1, '集会'),
+('反政府',       'politics', 3, 1, ''),
+('政治敏感',     'politics', 2, 1, ''),
+
+-- 色情类 (porn)
+('色情视频',     'porn', 4, 1, '色情'),
+('裸聊',         'porn', 4, 1, '色情'),
+('约炮',         'porn', 3, 1, '低俗'),
+('成人网站',     'porn', 3, 1, ''),
+('性交易',       'porn', 4, 1, '违法'),
+
+-- 广告类 (ad)
+('加微信',       'ad', 1, 1, '引流'),
+('免费领取',     'ad', 1, 1, '营销'),
+('日赚万元',     'ad', 2, 1, '诈骗引流'),
+('兼职刷单',     'ad', 3, 1, '诈骗'),
+('代开发票',     'ad', 3, 1, '违法广告'),
+
+-- 暴力类 (violence)
+('杀人',         'violence', 4, 1, ''),
+('砍人',         'violence', 3, 1, ''),
+('炸弹制作',     'violence', 4, 1, '危险信息'),
+('枪支买卖',     'violence', 4, 1, '违法'),
+('自杀方法',     'violence', 4, 1, '危险信息'),
+
+-- 辱骂类 (abuse)
+('傻逼',         'abuse', 2, 1, '脏话'),
+('滚蛋',         'abuse', 1, 1, '脏话'),
+('废物',         'abuse', 1, 1, '侮辱'),
+('去死',         'abuse', 2, 1, '恶意'),
+('人渣',         'abuse', 2, 1, '侮辱'),
+
+-- 自定义类 (custom) - 含已禁用的词条
+('竞品公司名',   'custom', 1, 1, '品牌保护'),
+('内部代号',     'custom', 1, 0, '内部'),
+('测试敏感词',   'custom', 1, 0, '测试')
+;
