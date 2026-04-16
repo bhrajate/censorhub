@@ -16,5 +16,5 @@ func (s FilterStrategyType) IsValid() bool {
 // FilterStrategy 过滤策略接口
 type FilterStrategy interface {
 	Name() FilterStrategyType
-	Apply(original string, matches []MatchItem) *FilterResult
+	Apply(original string, normalized string, matches []MatchItem) *FilterResult
 }

@@ -35,28 +35,6 @@ var (
 		},
 		[]string{"method", "path"},
 	)
-
-	FilterHitsTotal = promauto.NewCounterVec(
-		prometheus.CounterOpts{
-			Name: "censorhub_filter_hits_total",
-			Help: "Total number of filter hits",
-		},
-		[]string{"strategy", "is_hit"},
-	)
-
-	EngineWordCount = promauto.NewGauge(
-		prometheus.GaugeOpts{
-			Name: "censorhub_engine_word_count",
-			Help: "Number of words loaded in the filter engine",
-		},
-	)
-
-	EngineRebuildTotal = promauto.NewCounter(
-		prometheus.CounterOpts{
-			Name: "censorhub_engine_rebuild_total",
-			Help: "Total number of engine rebuilds",
-		},
-	)
 )
 
 func metricsMiddleware() gin.HandlerFunc {

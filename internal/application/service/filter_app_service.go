@@ -2,10 +2,10 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
+	"hash/fnv"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 
@@ -16,6 +16,7 @@ import (
 	"github.com/bhrajate/censorhub/internal/domain/service"
 	"github.com/bhrajate/censorhub/internal/domain/valueobject"
 	"github.com/bhrajate/censorhub/internal/infrastructure/cache"
+	"github.com/bhrajate/censorhub/pkg/metrics"
 )
 
 // FilterAppService 过滤应用服务
@@ -41,10 +42,11 @@ func NewFilterAppService(
 	}
 }
 
-// filterCacheKey 生成过滤结果缓存 key
+// filterCacheKey 生成过滤结果缓存 key（使用 FNV 非密码学哈希，性能优于 SHA256）
 func filterCacheKey(text string, strategy string) string {
-	h := sha256.Sum256([]byte(text))
-	return "filter:" + strategy + ":" + hex.EncodeToString(h[:16])
+	h := fnv.New64a()
+	h.Write([]byte(text))
+	return "filter:" + strategy + ":" + strconv.FormatUint(h.Sum64(), 36)
 }
 
 // Filter 根据策略过滤文本
@@ -73,18 +75,21 @@ func (s *FilterAppService) Filter(ctx context.Context, req *dto.FilterRequest) (
 	}
 
 	// 匹配
-	matches := s.engine.Match(req.Text)
+	matchResult := s.engine.Match(req.Text)
 
 	strategy, ok := s.strategies[strategyType]
 	if !ok {
 		strategy = s.strategies[valueobject.StrategyDetect]
 	}
 
-	// 应用策略
-	result := strategy.Apply(req.Text, matches)
+	// 应用策略（传入归一化文本，避免策略层重复 Normalize）
+	result := strategy.Apply(req.Text, matchResult.NormalizedText, matchResult.Matches)
 	result.CostMs = time.Since(start).Milliseconds()
 
 	resp := assembler.FilterResultToDTO(result)
+
+	// 记录过滤命中指标
+	metrics.FilterHitsTotal.WithLabelValues(string(strategyType), strconv.FormatBool(resp.IsHit)).Inc()
 
 	// 写缓存（异步，不阻塞响应）
 	if s.cache != nil {

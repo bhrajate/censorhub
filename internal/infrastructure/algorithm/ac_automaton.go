@@ -124,13 +124,17 @@ func (ac *AhoCorasick) buildFailPointers() {
 	}
 }
 
-// Search 在文本中搜索所有匹配的敏感词
+// Search 在文本中搜索所有匹配的敏感词（内部自动归一化）
 func (ac *AhoCorasick) Search(text string) []valueobject.MatchItem {
+	return ac.SearchNormalized(Normalize(text))
+}
+
+// SearchNormalized 在已归一化的文本中搜索匹配的敏感词
+func (ac *AhoCorasick) SearchNormalized(normalized string) []valueobject.MatchItem {
 	if ac.root == nil || ac.wordCount == 0 {
 		return nil
 	}
 
-	normalized := Normalize(text)
 	runes := []rune(normalized)
 
 	var results []valueobject.MatchItem

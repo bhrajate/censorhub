@@ -17,7 +17,7 @@ func (s *DetectStrategy) Name() valueobject.FilterStrategyType {
 	return valueobject.StrategyDetect
 }
 
-func (s *DetectStrategy) Apply(original string, matches []valueobject.MatchItem) *valueobject.FilterResult {
+func (s *DetectStrategy) Apply(original string, normalized string, matches []valueobject.MatchItem) *valueobject.FilterResult {
 	return &valueobject.FilterResult{
 		Original:    original,
 		Filtered:    original,

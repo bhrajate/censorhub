@@ -57,8 +57,9 @@ type RedisConfig struct {
 }
 
 type CacheConfig struct {
-	LocalTTL time.Duration `mapstructure:"local_ttl"`
-	RedisTTL time.Duration `mapstructure:"redis_ttl"`
+	LocalTTL      time.Duration `mapstructure:"local_ttl"`
+	RedisTTL      time.Duration `mapstructure:"redis_ttl"`
+	LocalMaxItems int           `mapstructure:"local_max_items"` // L1 缓存最大条目数，0 表示不限制
 }
 
 type LogConfig struct {
@@ -228,6 +229,9 @@ func setDefaults(cfg *Config) {
 	}
 	if cfg.Cache.RedisTTL == 0 {
 		cfg.Cache.RedisTTL = 30 * time.Minute
+	}
+	if cfg.Cache.LocalMaxItems == 0 {
+		cfg.Cache.LocalMaxItems = 100000 // 默认最多 10 万条 L1 缓存
 	}
 	if cfg.RateLimit.RequestsPerSecond == 0 {
 		cfg.RateLimit.RequestsPerSecond = 1000

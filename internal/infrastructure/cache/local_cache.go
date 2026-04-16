@@ -14,16 +14,18 @@ type cacheItem struct {
 
 // LocalCache 进程内缓存（L1 缓存）
 type LocalCache struct {
-	mu    sync.RWMutex
-	items map[string]*cacheItem
-	ttl   time.Duration
+	mu       sync.RWMutex
+	items    map[string]*cacheItem
+	ttl      time.Duration
+	maxItems int // 最大条目数，0 表示不限制
 }
 
 // NewLocalCache 创建本地缓存，ctx 取消时清理协程自动退出
-func NewLocalCache(ctx context.Context, ttl time.Duration) *LocalCache {
+func NewLocalCache(ctx context.Context, ttl time.Duration, maxItems int) *LocalCache {
 	lc := &LocalCache{
-		items: make(map[string]*cacheItem),
-		ttl:   ttl,
+		items:    make(map[string]*cacheItem),
+		ttl:      ttl,
+		maxItems: maxItems,
 	}
 	// 后台清理过期缓存
 	go lc.cleanup(ctx)
@@ -47,6 +49,13 @@ func (c *LocalCache) Get(key string) ([]byte, bool) {
 func (c *LocalCache) Set(key string, value []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	// 容量保护：超限时跳过新 key 写入（已有 key 更新不受限）
+	if c.maxItems > 0 && len(c.items) >= c.maxItems {
+		if _, exists := c.items[key]; !exists {
+			return
+		}
+	}
 
 	c.items[key] = &cacheItem{
 		value:     value,

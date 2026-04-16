@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/bhrajate/censorhub/pkg/metrics"
 )
 
 // MultiLevelCache 多级缓存编排，Redis 故障时自动降级为仅 L1
@@ -27,8 +29,10 @@ func NewMultiLevelCache(local *LocalCache, redis *RedisCache) *MultiLevelCache {
 func (c *MultiLevelCache) Get(ctx context.Context, key string) ([]byte, error) {
 	// L1
 	if v, ok := c.local.Get(key); ok {
+		metrics.CacheOpsTotal.WithLabelValues("l1", "hit").Inc()
 		return v, nil
 	}
+	metrics.CacheOpsTotal.WithLabelValues("l1", "miss").Inc()
 
 	// L2（受熔断器保护）
 	if !c.breaker.Allow() {
@@ -37,13 +41,17 @@ func (c *MultiLevelCache) Get(ctx context.Context, key string) ([]byte, error) {
 
 	v, err := c.redis.Get(ctx, key)
 	if err != nil {
+		metrics.CacheOpsTotal.WithLabelValues("l2", "miss").Inc()
 		if err != redis.Nil {
 			c.breaker.RecordFailure()
+			c.updateBreakerMetric()
 		}
 		return nil, err
 	}
 
+	metrics.CacheOpsTotal.WithLabelValues("l2", "hit").Inc()
 	c.breaker.RecordSuccess()
+	c.updateBreakerMetric()
 
 	// 回填 L1
 	c.local.Set(key, v)
@@ -96,6 +104,15 @@ func (c *MultiLevelCache) InvalidateByPrefix(ctx context.Context, prefix string)
 	}
 	c.breaker.RecordSuccess()
 	return nil
+}
+
+// updateBreakerMetric 更新熔断器状态指标
+func (c *MultiLevelCache) updateBreakerMetric() {
+	if c.breaker.IsOpen() {
+		metrics.CircuitBreakerStateGauge.Set(1) // open
+	} else {
+		metrics.CircuitBreakerStateGauge.Set(0) // closed or half-open
+	}
 }
 
 // IsNotFound 判断是否为缓存未命中

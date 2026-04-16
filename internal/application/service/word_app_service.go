@@ -1,9 +1,9 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/csv"
+	"io"
 	"sync"
 	"time"
 
@@ -20,6 +20,7 @@ import (
 	"github.com/bhrajate/censorhub/internal/infrastructure/cache"
 	"github.com/bhrajate/censorhub/internal/infrastructure/mq"
 	pkgerrors "github.com/bhrajate/censorhub/pkg/errors"
+	"github.com/bhrajate/censorhub/pkg/metrics"
 )
 
 const rebuildDebounceDelay = 500 * time.Millisecond
@@ -212,42 +213,42 @@ func (s *WordAppService) Import(ctx context.Context, req *dto.ImportRequest) (*d
 	}, nil
 }
 
-func (s *WordAppService) Export(ctx context.Context, category string) ([]byte, error) {
-	var words []*entity.SensitiveWord
-	var err error
+// ExportToWriter 分批流式导出词条为 CSV，直接写入 io.Writer
+func (s *WordAppService) ExportToWriter(ctx context.Context, category string, w io.Writer) error {
+	csvWriter := csv.NewWriter(w)
+	csvWriter.Write([]string{"text", "category", "level", "tag"})
 
+	var cat *valueobject.Category
 	if category != "" {
-		cat := valueobject.Category(category)
-		q := repository.WordQuery{Category: &cat, Page: 1, PageSize: 100000}
-		words, _, err = s.repo.List(ctx, q)
-	} else {
-		words, err = s.repo.FindAllActive(ctx)
+		c := valueobject.Category(category)
+		cat = &c
 	}
+
+	err := s.repo.FindInBatches(ctx, cat, 1000, func(words []*entity.SensitiveWord) error {
+		for _, word := range words {
+			csvWriter.Write([]string{
+				word.Text,
+				string(word.Category),
+				valueobject.RiskLevel(word.Level).String(),
+				word.Tag,
+			})
+		}
+		csvWriter.Flush()
+		return csvWriter.Error()
+	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	var buf bytes.Buffer
-	w := csv.NewWriter(&buf)
-	w.Write([]string{"text", "category", "level", "tag"})
-
-	for _, word := range words {
-		w.Write([]string{
-			word.Text,
-			string(word.Category),
-			valueobject.RiskLevel(word.Level).String(),
-			word.Tag,
-		})
-	}
-	w.Flush()
-
-	return buf.Bytes(), nil
+	csvWriter.Flush()
+	return csvWriter.Error()
 }
 
 // triggerRebuild 触发引擎热更新（防抖：500ms 内多次调用只执行一次）
 func (s *WordAppService) triggerRebuild(ctx context.Context) {
 	// 立即清除缓存，确保后续请求不会命中旧缓存
 	s.cache.InvalidateByPrefix(ctx, "words:")
+	s.cache.InvalidateByPrefix(ctx, "filter:")
 
 	s.rebuildMu.Lock()
 	defer s.rebuildMu.Unlock()
@@ -271,12 +272,23 @@ func (s *WordAppService) triggerRebuild(ctx context.Context) {
 			return
 		}
 		s.logger.Info("engine rebuilt", zap.Int("word_count", s.engine.WordCount()))
+		metrics.EngineRebuildTotal.Inc()
+		metrics.EngineWordCount.Set(float64(s.engine.WordCount()))
 
 		// 重建完成后通知其他实例
 		if err := s.pubsub.PublishWordUpdate(rebuildCtx); err != nil {
 			s.logger.Error("failed to publish word update", zap.Error(err))
 		}
 	})
+}
+
+// Close 停止防抖 Timer，应在优雅关停流程中调用
+func (s *WordAppService) Close() {
+	s.rebuildMu.Lock()
+	defer s.rebuildMu.Unlock()
+	if s.rebuildTimer != nil {
+		s.rebuildTimer.Stop()
+	}
 }
 
 // InitEngine 应用启动时初始化引擎
@@ -289,5 +301,6 @@ func (s *WordAppService) InitEngine(ctx context.Context) error {
 		return err
 	}
 	s.logger.Info("engine initialized", zap.Int("word_count", s.engine.WordCount()))
+	metrics.EngineWordCount.Set(float64(s.engine.WordCount()))
 	return nil
 }

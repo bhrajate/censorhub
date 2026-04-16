@@ -128,16 +128,16 @@ func (h *WordHandler) Import(c *gin.Context) {
 	response.Success(c, result)
 }
 
-// Export 导出词条
+// Export 导出词条（流式写入响应）
 func (h *WordHandler) Export(c *gin.Context) {
 	category := c.Query("category")
-	data, err := h.wordService.Export(c.Request.Context(), category)
-	if err != nil {
-		response.Error(c, err)
-		return
-	}
 
 	c.Header("Content-Type", "text/csv; charset=utf-8")
 	c.Header("Content-Disposition", "attachment; filename=sensitive_words.csv")
-	c.Data(http.StatusOK, "text/csv", data)
+	c.Status(http.StatusOK)
+
+	if err := h.wordService.ExportToWriter(c.Request.Context(), category, c.Writer); err != nil {
+		// Header 已发送，只能记录日志
+		_ = err
+	}
 }

@@ -19,8 +19,8 @@ func (s *ReplaceStrategy) Name() valueobject.FilterStrategyType {
 	return valueobject.StrategyReplace
 }
 
-func (s *ReplaceStrategy) Apply(original string, matches []valueobject.MatchItem) *valueobject.FilterResult {
-	filtered := replaceMatches(original, matches, '*')
+func (s *ReplaceStrategy) Apply(original string, normalized string, matches []valueobject.MatchItem) *valueobject.FilterResult {
+	filtered := replaceMatches(original, normalized, matches, '*')
 	return &valueobject.FilterResult{
 		Original:    original,
 		Filtered:    filtered,
@@ -34,13 +34,13 @@ func (s *ReplaceStrategy) Apply(original string, matches []valueobject.MatchItem
 
 // replaceMatches 按匹配位置替换原文中的敏感词
 // 处理重叠匹配：合并重叠区间后统一替换
-func replaceMatches(original string, matches []valueobject.MatchItem, mask rune) string {
+func replaceMatches(original string, normalized string, matches []valueobject.MatchItem, mask rune) string {
 	if len(matches) == 0 {
 		return original
 	}
 
 	runes := []rune(original)
-	normalizedRunes := []rune(Normalize(original))
+	normalizedRunes := []rune(normalized)
 
 	// 按起始位置排序
 	sorted := make([]valueobject.MatchItem, len(matches))

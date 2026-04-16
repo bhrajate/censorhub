@@ -26,8 +26,8 @@ func TestACFilterEngine_MatchAfterRebuild(t *testing.T) {
 	engine := NewACFilterEngine()
 
 	// 初始无词条
-	results := engine.Match("赌博网站")
-	if len(results) != 0 {
+	mr := engine.Match("赌博网站")
+	if len(mr.Matches) != 0 {
 		t.Error("expected no matches before rebuild")
 	}
 
@@ -37,12 +37,12 @@ func TestACFilterEngine_MatchAfterRebuild(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	results = engine.Match("赌博网站")
-	if len(results) != 1 {
-		t.Errorf("expected 1 match, got %d", len(results))
+	mr = engine.Match("赌博网站")
+	if len(mr.Matches) != 1 {
+		t.Errorf("expected 1 match, got %d", len(mr.Matches))
 	}
-	if results[0].Word != "赌博" {
-		t.Errorf("expected word '赌博', got %q", results[0].Word)
+	if mr.Matches[0].Word != "赌博" {
+		t.Errorf("expected word '赌博', got %q", mr.Matches[0].Word)
 	}
 
 	// 词条数
@@ -58,14 +58,14 @@ func TestACFilterEngine_HotUpdate(t *testing.T) {
 	// 热更新：移除赌博，增加色情
 	engine.Rebuild(makeWords("色情"))
 
-	results := engine.Match("赌博网站")
-	if len(results) != 0 {
+	mr := engine.Match("赌博网站")
+	if len(mr.Matches) != 0 {
 		t.Error("expected no matches after hot update removed the word")
 	}
 
-	results = engine.Match("色情内容")
-	if len(results) != 1 {
-		t.Errorf("expected 1 match after hot update, got %d", len(results))
+	mr = engine.Match("色情内容")
+	if len(mr.Matches) != 1 {
+		t.Errorf("expected 1 match after hot update, got %d", len(mr.Matches))
 	}
 }
 
@@ -82,8 +82,8 @@ func TestACFilterEngine_InactiveWordsSkipped(t *testing.T) {
 		t.Errorf("expected 1 active word, got %d", engine.WordCount())
 	}
 
-	results := engine.Match("色情内容")
-	if len(results) != 0 {
+	mr := engine.Match("色情内容")
+	if len(mr.Matches) != 0 {
 		t.Error("inactive word should not be matched")
 	}
 }
@@ -99,8 +99,8 @@ func TestACFilterEngine_ConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			results := engine.Match("赌博和色情")
-			if len(results) < 1 {
+			mr := engine.Match("赌博和色情")
+			if len(mr.Matches) < 1 {
 				t.Error("expected at least 1 match during concurrent read")
 			}
 		}()

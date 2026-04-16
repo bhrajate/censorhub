@@ -5,7 +5,7 @@ import (
 	"sync/atomic"
 
 	"github.com/bhrajate/censorhub/internal/domain/entity"
-	"github.com/bhrajate/censorhub/internal/domain/valueobject"
+	"github.com/bhrajate/censorhub/internal/domain/service"
 )
 
 // ACFilterEngine 基于 AC 自动机的过滤引擎实现
@@ -23,10 +23,15 @@ func NewACFilterEngine() *ACFilterEngine {
 	return e
 }
 
-// Match 返回文本中所有匹配的敏感词（无锁读）
-func (e *ACFilterEngine) Match(text string) []valueobject.MatchItem {
+// Match 返回文本中所有匹配的敏感词及归一化后的文本（无锁读）
+func (e *ACFilterEngine) Match(text string) service.MatchResult {
 	ac := e.current.Load().(*AhoCorasick)
-	return ac.Search(text)
+	normalized := Normalize(text)
+	matches := ac.SearchNormalized(normalized)
+	return service.MatchResult{
+		Matches:        matches,
+		NormalizedText: normalized,
+	}
 }
 
 // Rebuild 从词条列表重建 AC 自动机（线程安全）

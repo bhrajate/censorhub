@@ -27,4 +27,6 @@ type WordRepository interface {
 	List(ctx context.Context, query WordQuery) ([]*entity.SensitiveWord, int64, error)
 	FindAllActive(ctx context.Context) ([]*entity.SensitiveWord, error)
 	BatchCreate(ctx context.Context, words []*entity.SensitiveWord) (int, error)
+	// FindInBatches 分批查询词条，每批调用 fn 处理
+	FindInBatches(ctx context.Context, category *valueobject.Category, batchSize int, fn func(words []*entity.SensitiveWord) error) error
 }

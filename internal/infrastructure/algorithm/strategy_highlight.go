@@ -1,6 +1,7 @@
 package algorithm
 
 import (
+	"html"
 	"sort"
 	"strings"
 	"time"
@@ -19,8 +20,8 @@ func (s *HighlightStrategy) Name() valueobject.FilterStrategyType {
 	return valueobject.StrategyHighlight
 }
 
-func (s *HighlightStrategy) Apply(original string, matches []valueobject.MatchItem) *valueobject.FilterResult {
-	filtered := highlightMatches(original, matches)
+func (s *HighlightStrategy) Apply(original string, normalized string, matches []valueobject.MatchItem) *valueobject.FilterResult {
+	filtered := highlightMatches(original, normalized, matches)
 	return &valueobject.FilterResult{
 		Original:    original,
 		Filtered:    filtered,
@@ -63,13 +64,13 @@ func mergeIntervals(matches []valueobject.MatchItem) []interval {
 	return intervals
 }
 
-func highlightMatches(original string, matches []valueobject.MatchItem) string {
+func highlightMatches(original string, normalized string, matches []valueobject.MatchItem) string {
 	if len(matches) == 0 {
 		return original
 	}
 
 	runes := []rune(original)
-	normalizedRunes := []rune(Normalize(original))
+	normalizedRunes := []rune(normalized)
 	intervals := mergeIntervals(matches)
 
 	// 如果长度一致，直接在原始 runes 上插入标记
@@ -83,21 +84,21 @@ func highlightMatches(original string, matches []valueobject.MatchItem) string {
 
 	idx := 0
 	for _, iv := range intervals {
-		// 写入区间前的文本
+		// 写入区间前的文本（HTML 转义，防止 XSS）
 		for i := idx; i < iv.start && i < len(targetRunes); i++ {
-			b.WriteRune(targetRunes[i])
+			b.WriteString(html.EscapeString(string(targetRunes[i])))
 		}
-		// 写入高亮标记
+		// 写入高亮标记（匹配内容也需转义）
 		b.WriteString("<mark>")
 		for i := iv.start; i < iv.end && i < len(targetRunes); i++ {
-			b.WriteRune(targetRunes[i])
+			b.WriteString(html.EscapeString(string(targetRunes[i])))
 		}
 		b.WriteString("</mark>")
 		idx = iv.end
 	}
-	// 写入剩余文本
+	// 写入剩余文本（HTML 转义）
 	for i := idx; i < len(targetRunes); i++ {
-		b.WriteRune(targetRunes[i])
+		b.WriteString(html.EscapeString(string(targetRunes[i])))
 	}
 
 	return b.String()

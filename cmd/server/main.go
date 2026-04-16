@@ -13,6 +13,8 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/health"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	"github.com/bhrajate/censorhub/internal/application/service"
 	"github.com/bhrajate/censorhub/internal/domain/valueobject"
@@ -99,7 +101,7 @@ func main() {
 	defer cancel()
 
 	// 缓存
-	localCache := cache.NewLocalCache(ctx, cfg.Cache.LocalTTL)
+	localCache := cache.NewLocalCache(ctx, cfg.Cache.LocalTTL, cfg.Cache.LocalMaxItems)
 	redisCache := cache.NewRedisCache(rdb, cfg.Cache.RedisTTL)
 	multiCache := cache.NewMultiLevelCache(localCache, redisCache)
 
@@ -124,7 +126,10 @@ func main() {
 
 	// 8. 订阅热更新通知
 	pubsub.SubscribeWordUpdate(ctx, func() {
-		words, err := wordRepo.FindAllActive(context.Background())
+		rebuildCtx, rebuildCancel := context.WithTimeout(ctx, 30*time.Second)
+		defer rebuildCancel()
+
+		words, err := wordRepo.FindAllActive(rebuildCtx)
 		if err != nil {
 			log.Error("failed to load words for rebuild", zap.Error(err))
 			return
@@ -144,10 +149,22 @@ func main() {
 
 	router := httpserver.NewRouter(filterHandler, wordHandler, healthHandler, mw)
 
-	// 10. 启动 gRPC server
-	grpcSrv := grpc.NewServer()
+	// 10. 启动 gRPC server（带拦截器）
+	grpcSrv := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			grpcserver.RecoveryInterceptor(log),
+			grpcserver.LoggingInterceptor(log),
+			grpcserver.RateLimitInterceptor(cfg.RateLimit.RequestsPerSecond, cfg.RateLimit.Burst),
+			grpcserver.AuthInterceptor(cfg.Auth.APIKeys),
+		),
+	)
 	censorGRPC := grpcserver.NewCensorServiceServer(filterAppService)
 	censorGRPC.RegisterServer(grpcSrv)
+
+	// gRPC 健康检查协议（支持 K8s gRPC 探针）
+	healthServer := health.NewServer()
+	healthpb.RegisterHealthServer(grpcSrv, healthServer)
+	healthServer.SetServingStatus("censor.v1.CensorService", healthpb.HealthCheckResponse_SERVING)
 
 	go func() {
 		lis, err := net.Listen("tcp", cfg.Server.GRPC.Addr)
@@ -182,12 +199,26 @@ func main() {
 	sig := <-quit
 	log.Info("Shutting down server...", zap.String("signal", sig.String()))
 
-	cancel() // 停止 PubSub 订阅
+	cancel()                 // 停止 PubSub 订阅和后台协程
+	wordAppService.Close()   // 停止防抖 Timer
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 
-	grpcSrv.GracefulStop()
+	// gRPC 优雅关停（带超时兜底）
+	grpcDone := make(chan struct{})
+	go func() {
+		grpcSrv.GracefulStop()
+		close(grpcDone)
+	}()
+	select {
+	case <-grpcDone:
+		log.Info("gRPC server stopped gracefully")
+	case <-time.After(5 * time.Second):
+		log.Warn("gRPC graceful stop timeout, forcing stop")
+		grpcSrv.Stop()
+	}
+
 	if err := httpSrv.Shutdown(shutdownCtx); err != nil {
 		log.Error("HTTP server forced shutdown", zap.Error(err))
 	}

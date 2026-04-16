@@ -8,6 +8,7 @@ import (
 
 	"github.com/bhrajate/censorhub/internal/domain/entity"
 	"github.com/bhrajate/censorhub/internal/domain/repository"
+	"github.com/bhrajate/censorhub/internal/domain/valueobject"
 )
 
 type wordRepo struct {
@@ -111,6 +112,25 @@ func (r *wordRepo) FindAllActive(ctx context.Context) ([]*entity.SensitiveWord, 
 		words[i] = m.ToEntity()
 	}
 	return words, nil
+}
+
+func (r *wordRepo) FindInBatches(ctx context.Context, category *valueobject.Category, batchSize int, fn func(words []*entity.SensitiveWord) error) error {
+	db := r.db.WithContext(ctx).Model(&SensitiveWordModel{})
+	if category != nil {
+		db = db.Where("category = ?", string(*category))
+	} else {
+		db = db.Where("status = ?", 1)
+	}
+
+	var models []SensitiveWordModel
+	result := db.FindInBatches(&models, batchSize, func(tx *gorm.DB, batch int) error {
+		words := make([]*entity.SensitiveWord, len(models))
+		for i, m := range models {
+			words[i] = m.ToEntity()
+		}
+		return fn(words)
+	})
+	return result.Error
 }
 
 func (r *wordRepo) BatchCreate(ctx context.Context, words []*entity.SensitiveWord) (int, error) {
