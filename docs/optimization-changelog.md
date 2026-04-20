@@ -19,9 +19,13 @@
 - 将原来 main.go 中 PubSub 专用的 `ctx, cancel` 提前到缓存创建之前，统一管理所有后台协程生命周期
 
 ```go
-// local_cache.go
-func NewLocalCache(ctx context.Context, ttl time.Duration) *LocalCache {
-    lc := &LocalCache{items: make(map[string]*cacheItem), ttl: ttl}
+// local_cache.go （后续第二轮优化又补了 maxItems 容量上限参数）
+func NewLocalCache(ctx context.Context, ttl time.Duration, maxItems int) *LocalCache {
+    lc := &LocalCache{
+        items:    make(map[string]*cacheItem),
+        ttl:      ttl,
+        maxItems: maxItems,
+    }
     go lc.cleanup(ctx)
     return lc
 }
@@ -121,18 +125,27 @@ func (p *RedisPubSub) SubscribeWordUpdate(ctx context.Context, handler func()) {
 `triggerRebuild` 内部启动的协程使用 `context.Background()` 执行数据库查询和引擎重建。这意味着即使调用方的 context 已取消（如应用关停），重建操作仍然会继续执行。优雅关停时可能无限等待 DB 查询完成。
 
 **解决方案：**
-- 协程内部使用 `context.WithTimeout(ctx, 30*time.Second)` 替代 `context.Background()`
-- 继承调用方 context 的取消信号，同时设置 30 秒超时兜底
+- `triggerRebuild` 派生带超时的 ctx，设置 30 秒超时兜底
+- 后续第二轮优化把直接 `go func()` 改成 `time.AfterFunc(500ms, ...)` 做防抖；此时 request ctx 已经 Done，因此新 ctx 必须基于 `context.Background()` 派生，不能继承调用方 ctx
+- 通过在 `main.go` 关停流程中调用 `wordAppService.Close()` 停掉防抖 Timer，避免进程退出后回调仍然执行
 
 ```go
+// 当前实现（word_app_service.go）
 func (s *WordAppService) triggerRebuild(ctx context.Context) {
-    go func() {
-        rebuildCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+    s.cache.InvalidateByPrefix(ctx, "words:")
+    s.cache.InvalidateByPrefix(ctx, "filter:")
+
+    s.rebuildMu.Lock()
+    defer s.rebuildMu.Unlock()
+    if s.rebuildTimer != nil {
+        s.rebuildTimer.Stop()
+    }
+    s.rebuildTimer = time.AfterFunc(rebuildDebounceDelay, func() {
+        rebuildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
         defer cancel()
         words, err := s.repo.FindAllActive(rebuildCtx)
         // ...
-    }()
-    // ...
+    })
 }
 ```
 
@@ -314,7 +327,9 @@ func (c *LocalCache) DeleteByPrefix(prefix string) {
 - 以 `filter:{strategy}:{sha256(text)[:32]}` 为缓存 key
 - 缓存命中时直接反序列化返回（仅重算 CostMs），未命中时计算后 JSON 序列化写入缓存
 - 词库更新时通过 `InvalidateByPrefix("filter:")` 自动清除所有过滤结果缓存
+  - 注：本轮实施时 `triggerRebuild` 仅清除了 `words:` 前缀，`filter:` 前缀的同步清理于 2026-04 第二轮优化补齐，见 `optimization-2026-04-16.md` 的 1.1 条
 - cache 参数支持 nil（测试场景），此时退化为无缓存模式
+- 2026-04 第二轮优化将缓存 key 的 SHA256 哈希替换为 FNV-64a + base36，降低 CPU 开销
 
 ```go
 cacheKey := filterCacheKey(req.Text, string(strategyType))

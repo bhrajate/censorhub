@@ -1,6 +1,8 @@
 # CensorHub 优化分析报告（2026-04-16）
 
-> 基于当前代码状态的全面审查。前一轮优化（见 `optimization-changelog.md`）已修复 19 项问题，本次聚焦于**仍然存在的问题**和**新发现的优化点**。
+> **[已归档]** 本文档是 2026-04-16 的代码审查报告，提出的 16 项问题除了 4.5「测试覆盖不足」之外，已全部在 commit `7936e51 fix: optimization-2026-04-16` 落地。
+>
+> 每个条目下方附有 **落地状态** 行，代码现状请以 `internal/`、`cmd/`、`deployments/` 目录当前内容为准；需要追溯动机时仍可参考本文档。
 
 ---
 
@@ -37,6 +39,8 @@ func (s *WordAppService) triggerRebuild(ctx context.Context) {
     // ... 后续防抖重建逻辑不变
 }
 ```
+
+**落地状态：** ✅ 已修复。见 `internal/application/service/word_app_service.go:250-251`，两个前缀同步清除。
 
 ---
 
@@ -79,6 +83,8 @@ func highlightMatches(original string, matches []valueobject.MatchItem) string {
 }
 ```
 
+**落地状态：** ✅ 已修复。`internal/infrastructure/algorithm/strategy_highlight.go` 中前置文本、匹配文本、尾部文本均通过 `html.EscapeString` 转义。
+
 ---
 
 ## 二、高危 — 功能缺陷
@@ -120,6 +126,8 @@ grpcSrv := grpc.NewServer(
 )
 ```
 
+**落地状态：** ✅ 已修复。`cmd/server/main.go:152-160` 注册了 `Recovery / Logging / RateLimit / Auth` 四个自研 Unary interceptor，实现位于 `internal/interfaces/grpc/interceptor.go`。
+
 ---
 
 ### 2.2 gRPC GracefulStop 无超时兜底
@@ -150,6 +158,8 @@ case <-time.After(5 * time.Second):
 }
 ```
 
+**落地状态：** ✅ 已修复。见 `cmd/server/main.go:208-220`。
+
 ---
 
 ### 2.3 PubSub 回调中使用 context.Background()
@@ -178,6 +188,8 @@ pubsub.SubscribeWordUpdate(ctx, func() {
     // ...
 })
 ```
+
+**落地状态：** ✅ 已修复。见 `cmd/server/main.go:128-142`。
 
 ---
 
@@ -221,6 +233,8 @@ type FilterStrategy interface {
 }
 ```
 
+**落地状态：** ✅ 已修复。采用方案 A + B：`filter_engine.go` 的 `Match` 现在返回 `MatchResult{Matches, NormalizedText}`；`FilterStrategy.Apply` 签名调整为 `Apply(original, normalized string, matches []MatchItem)`，Replace/Highlight 不再重复调用 `Normalize`。
+
 ---
 
 ### 3.2 缓存 Key 使用 SHA256 开销偏大
@@ -248,6 +262,8 @@ func filterCacheKey(text string, strategy string) string {
     return "filter:" + strategy + ":" + strconv.FormatUint(h, 36)
 }
 ```
+
+**落地状态：** ✅ 已修复。为了避免引入额外依赖，最终采用了标准库 `hash/fnv` 的 FNV-64a + base36 方案，见 `internal/application/service/filter_app_service.go:45-50`。
 
 ---
 
@@ -284,6 +300,8 @@ func (c *LocalCache) Set(key string, value []byte) {
     c.items[key] = &cacheItem{value: value, expiredAt: time.Now().Add(c.ttl)}
 }
 ```
+
+**落地状态：** ✅ 已修复。`internal/infrastructure/cache/local_cache.go` 的 `LocalCache` 增加 `maxItems` 字段，`NewLocalCache(ctx, ttl, maxItems)` 接收上限；配置默认 `LocalMaxItems = 100000`，超限时拒绝新 key 写入。
 
 ---
 
@@ -329,6 +347,8 @@ func (l *perClientLimiter) getLimiter(key string) *rate.Limiter {
 
 需注意对 `limiters` map 的定期清理，防止已过期客户端条目积累。
 
+**落地状态：** ✅ 已修复。`internal/interfaces/middleware/ratelimit.go` 实现了按 API Key / IP 维度分桶限流，并对 10 分钟内未活跃的客户端桶做定期清理。
+
 ---
 
 ### 3.5 Export 全量加载到内存
@@ -367,6 +387,8 @@ func (s *WordAppService) Export(ctx context.Context, category string, w io.Write
 }
 ```
 
+**落地状态：** ✅ 已修复。`WordAppService.ExportToWriter` 调用 `repo.FindInBatches(ctx, cat, 1000, ...)` 流式处理，HTTP handler 直接写入 `http.ResponseWriter`，全程无全量载入。
+
 ---
 
 ## 四、低优 — 运维与可观测性
@@ -399,6 +421,8 @@ middleware.EngineWordCount.Set(float64(s.engine.WordCount()))
 middleware.EngineWordCount.Set(float64(s.engine.WordCount()))
 ```
 
+**落地状态：** ✅ 已修复。指标统一迁移到 `pkg/metrics/metrics.go` 集中定义，并在 `FilterAppService.Filter`、`WordAppService.triggerRebuild`、`WordAppService.InitEngine` 中更新。
+
 ---
 
 ### 4.2 缺少缓存命中率指标
@@ -423,6 +447,8 @@ var (
     })
 )
 ```
+
+**落地状态：** ✅ 已修复。`pkg/metrics/metrics.go` 定义了 `CacheOpsTotal`（level=l1/l2, result=hit/miss）和 `CircuitBreakerStateGauge`（0=closed, 1=open, 2=half-open）；`MultiLevelCache` 的 Get/熔断状态流转处已接入上报。
 
 ---
 
@@ -454,6 +480,8 @@ grafana:
   image: grafana/grafana:10.4.0
 ```
 
+**落地状态：** ✅ 已修复。`deployments/docker/docker-compose.yaml` 已锁定到 `jaegertracing/all-in-one:1.55`、`prom/prometheus:v2.51.0`、`grafana/grafana:10.4.0`。
+
 ---
 
 ### 4.4 WordAppService 关停时未停止防抖 Timer
@@ -483,6 +511,8 @@ wordAppService.Close() // 停止防抖 timer
 grpcSrv.GracefulStop()
 ```
 
+**落地状态：** ✅ 已修复。见 `word_app_service.go:286-292` 的 `Close()` 和 `cmd/server/main.go:202-203` 的关停调用。
+
 ---
 
 ### 4.5 测试覆盖不足
@@ -501,6 +531,8 @@ grpcSrv.GracefulStop()
 1. **缓存一致性集成测试**：创建词 → 过滤命中 → 删除词 → 验证缓存清除后过滤不命中
 2. **熔断器单元测试**：模拟连续失败 → 验证进入 open → 等待 timeout → 验证进入 half-open → 成功后恢复
 3. **BatchDetect 压力测试**：100 条 × 50KB 文本 × 并发请求，验证内存和 CPU 不会失控
+
+**落地状态：** ❌ 未修复。`test/e2e/` 和 `test/integration/` 目录当前仍为空，是本轮唯一遗留项。
 
 ---
 
@@ -527,6 +559,8 @@ readinessProbe:
   grpc:
     port: 9090
 ```
+
+**落地状态：** ✅ 已修复。`cmd/server/main.go:164-167` 注册了 `grpc.health.v1.Health`，并将 `censor.v1.CensorService` 标记为 SERVING。
 
 ---
 
@@ -567,3 +601,26 @@ Phase 4 — 可观测性与运维（1 天）
 | 前一轮已修复 | 19 项 | 见 `optimization-changelog.md` |
 | 前一轮修复不完整 | 1 项 | 1.1 缓存清除前缀错误 |
 | 本次新发现 | 15 项 | 本文档中的所有条目 |
+
+---
+
+## 本轮落地汇总（2026-04-16）
+
+| 条目 | 落地情况 | 主要证据 |
+|------|----------|---------|
+| 1.1 词库更新未清除过滤结果缓存 | ✅ | `word_app_service.go:250-251` 两个前缀同步清除 |
+| 1.2 Highlight XSS 风险 | ✅ | `strategy_highlight.go` 使用 `html.EscapeString` |
+| 2.1 gRPC 端无中间件 | ✅ | `cmd/server/main.go:152-160` + `internal/interfaces/grpc/interceptor.go` |
+| 2.2 gRPC GracefulStop 无超时 | ✅ | `cmd/server/main.go:208-220` 5s 超时兜底 |
+| 2.3 PubSub 回调 ctx 问题 | ✅ | `cmd/server/main.go:128-142` 派生带超时的 ctx |
+| 3.1 Replace/Highlight 重复 Normalize | ✅ | `filter_engine.go` 返回 `MatchResult`，策略签名含 `normalized` |
+| 3.2 缓存 Key SHA256 | ✅ | `filter_app_service.go:45-50` 改 FNV-64a + base36 |
+| 3.3 本地缓存无容量上限 | ✅ | `local_cache.go` 增加 `maxItems`，默认 100000 |
+| 3.4 全局限流器无法区分客户端 | ✅ | `ratelimit.go` 按 API Key / IP 分桶 + 定时清理 |
+| 3.5 Export 全量加载 | ✅ | `ExportToWriter` + `FindInBatches` 流式处理 |
+| 4.1 Prometheus 指标未接入 | ✅ | `pkg/metrics/metrics.go` + 业务侧调用点 |
+| 4.2 缺缓存/熔断器指标 | ✅ | `CacheOpsTotal`、`CircuitBreakerStateGauge` 已定义并上报 |
+| 4.3 Docker Compose 锁版本 | ✅ | Jaeger 1.55 / Prometheus v2.51.0 / Grafana 10.4.0 |
+| 4.4 关停时未停防抖 Timer | ✅ | `wordAppService.Close()` + `main.go:202-203` |
+| 4.5 测试覆盖不足 | ❌ | `test/e2e/`、`test/integration/` 仍为空 |
+| 4.6 gRPC 健康检查 | ✅ | `cmd/server/main.go:164-167` |

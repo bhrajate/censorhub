@@ -14,18 +14,21 @@
 
 ### 1. 写操作时主动失效缓存
 
-词条的增删改操作（`triggerRebuild`）采用**先写库，再删缓存**的策略：
+词条的增删改操作（`triggerRebuild`）采用**先写库 → 立即删缓存 → 防抖延迟重建引擎**的策略：
 
 ```go
 // word_app_service.go - triggerRebuild()
 func (s *WordAppService) triggerRebuild(ctx context.Context) {
-    // 1. 异步从 DB 全量加载并重建过滤引擎
-    // 2. 通过 Redis Pub/Sub 通知其他实例重建
-    // 3. 删除缓存：cache.InvalidateByPrefix(ctx, "words:")
+    // 1. 立即清除 words: 和 filter: 两个前缀的缓存（L1 + L2）
+    s.cache.InvalidateByPrefix(ctx, "words:")
+    s.cache.InvalidateByPrefix(ctx, "filter:")
+
+    // 2. 防抖 500ms 后异步重建引擎 + Pub/Sub 通知其他实例
+    s.rebuildTimer = time.AfterFunc(rebuildDebounceDelay, func() { ... })
 }
 ```
 
-流程：**DB 写入成功 → 异步重建引擎 → Pub/Sub 通知其他实例 → 按前缀清除缓存（L1 + L2）**
+流程：**DB 写入成功 → 立即清除 L1 + L2 缓存（两个前缀）→ 500ms 防抖窗口 → 重建本地引擎 → 通过 Redis Pub/Sub 通知其他实例重建**。
 
 ### 2. TTL 兜底
 
@@ -74,41 +77,40 @@ func (c *MultiLevelCache) InvalidateByPrefix(ctx context.Context, prefix string)
 
 **影响**：实例A 的 L1 在 TTL 过期前一直返回旧数据。但 `InvalidateByPrefix` 通过 Pub/Sub 触发所有实例清缓存，可以缓解此问题。
 
-### 风险 4：异步重建引擎的时间窗口
+### 风险 4：防抖 + 异步重建引擎的时间窗口
 
-`triggerRebuild` 中引擎重建是 goroutine 异步执行的：
+`triggerRebuild` 中引擎重建是通过 `time.AfterFunc` 防抖后异步执行的：
 
 ```go
-go func() {
-    words, err := s.repo.FindAllActive(rebuildCtx)
+s.rebuildTimer = time.AfterFunc(rebuildDebounceDelay, func() {
+    rebuildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    words, _ := s.repo.FindAllActive(rebuildCtx)
     s.engine.Rebuild(words)
-}()
+    s.pubsub.PublishWordUpdate(rebuildCtx)
+})
 ```
 
-在重建完成前，过滤请求使用的仍是旧引擎数据。
+> 注：这里必须用 `context.Background()` 派生新 ctx，因为调用方 ctx 在 request 结束后即已 Done，而重建会在 500ms 之后才触发。
 
-### 风险 5：缓存与引擎数据不一致
+在 500ms 防抖窗口和后续重建完成之间，过滤请求匹配使用的仍是旧引擎数据。但由于缓存在窗口开始时就已清空，新请求会走引擎并看到"旧词库的计算结果"（而非"旧缓存结果"），一致性损失被压缩到单次重建时长内。
 
-过滤结果缓存（`filter:*`）是基于引擎匹配结果生成的，但词条更新时只清除了 `words:` 前缀的缓存，`filter:` 前缀的缓存未被清除。
+### ~~风险 5：缓存与引擎数据不一致~~（已修复，2026-04）
+
+过滤结果缓存（`filter:*`）基于引擎匹配结果生成。历史上词条更新时只清除了 `words:` 前缀的缓存，`filter:*` 前缀的缓存可能仍返回基于旧词库的过滤结果。
+
+**当前实现已同时清除两个前缀：**
 
 ```go
-s.cache.InvalidateByPrefix(ctx, "words:")  // ← 只清了 words: 前缀
-// filter:* 的缓存可能仍返回基于旧词库的过滤结果
+s.cache.InvalidateByPrefix(ctx, "words:")
+s.cache.InvalidateByPrefix(ctx, "filter:")  // ← 2026-04 补齐
 ```
 
 ## 改进建议
 
-### 建议 1：清除过滤结果缓存
+### ~~建议 1：清除过滤结果缓存~~（已落地）
 
-词条变更时同时清除 `filter:` 前缀的缓存：
-
-```go
-func (s *WordAppService) triggerRebuild(ctx context.Context) {
-    // ...
-    s.cache.InvalidateByPrefix(ctx, "words:")
-    s.cache.InvalidateByPrefix(ctx, "filter:")  // 新增
-}
-```
+词条变更时同时清除 `filter:` 前缀的缓存，见 `word_app_service.go: triggerRebuild`。
 
 ### 建议 2：Pub/Sub 重连后自动 rebuild
 
@@ -131,18 +133,9 @@ func (p *RedisPubSub) runSubscription(ctx context.Context, handler func()) error
 }
 ```
 
-### 建议 3：批量更新防抖
+### ~~建议 3：批量更新防抖~~（已落地）
 
-批量导入时避免触发多次 rebuild，可以在消费端加防抖：
-
-```go
-// 收到通知后延迟 500ms 执行，期间新通知重置计时器
-type Debouncer struct {
-    timer    *time.Timer
-    duration time.Duration
-    mu       sync.Mutex
-}
-```
+`WordAppService` 已通过 `time.AfterFunc(500ms)` 做了防抖，批量导入 N 条只会触发一次引擎重建。
 
 ### 建议 4：熔断恢复后主动清理
 
@@ -157,4 +150,4 @@ type Debouncer struct {
 | Pub/Sub 通知 | 跨实例同步 | 多实例部署 |
 | 异步引擎重建 | 更新内存过滤引擎 | 敏感词热更新 |
 
-当前方案提供了**最终一致性**保证，对于敏感词过滤系统来说是合理的。最需要修复的是**风险 5（filter 缓存未清除）**，这可能导致词条更新后过滤结果仍然是旧的。
+当前方案提供了**最终一致性**保证，对于敏感词过滤系统来说是合理的。历史上的风险 5（`filter:*` 缓存未清除）和建议 3（批量更新防抖）已在 2026-04 落地；现存的主要残留风险是**风险 2（删缓存失败时 Redis 残留旧值，依赖 TTL 兜底）**和**风险 4（500ms 防抖 + 重建完成之前的窗口内读到旧词库匹配结果）**，业务侧可容忍。此外，熔断器状态、缓存命中/未命中已接入 Prometheus（`censorhub_circuit_breaker_state`、`censorhub_cache_operations_total`），可观测性可以在线判断一致性降级是否正在发生。

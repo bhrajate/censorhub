@@ -132,7 +132,8 @@ censorhub/
 │
 ├── pkg/                          # 可复用工具包
 │   ├── errors/                   # 业务错误码定义（10001~10010）
-│   └── logger/                   # Zap 结构化日志工厂
+│   ├── logger/                   # Zap 结构化日志工厂
+│   └── metrics/                  # Prometheus 业务指标集中定义（缓存命中、熔断状态、过滤命中、引擎词数/重建次数）
 │
 ├── scripts/                      # 构建/工具脚本
 │
@@ -192,27 +193,34 @@ type ACFilterEngine struct {
                        └─ 未命中 → 执行过滤 → 写入 L1 + L2
 ```
 
-- **L1**（`local_cache.go`）— 内存 Map + RWLock + 自动过期清理（1 分钟间隔）
-- **L2**（`redis_cache.go`）— Redis 分布式缓存，支持前缀删除（SCAN + UNLINK）
-- **MultiLevelCache** — 编排 L1 + L2，内置**熔断器**（5 次失败触发 10 秒 L2 降级）
-- **缓存 Key**：`filter:{strategy}:{SHA256(text)[:16]}`
+- **L1**（`local_cache.go`）— 内存 Map + RWLock + 自动过期清理（每分钟一次，每轮最多淘汰 1000 条，避免长时间持锁）+ 条目数上限（`Cache.LocalMaxItems`，默认 10 万，超限时拒绝新 key 写入）
+- **L2**（`redis_cache.go`）— Redis 分布式缓存，支持前缀删除（SCAN COUNT 1000 + Pipeline + UNLINK）
+- **MultiLevelCache** — 编排 L1 + L2，内置**熔断器**（连续 5 次失败触发 10 秒 L2 降级，Half-Open 探测 2 次成功后恢复 Closed）
+- **缓存 Key**：`filter:{strategy}:{base36(FNV-64a(text))}`（非密码学哈希，性能优于 SHA256）
+- **可观测**：L1/L2 命中/未命中计数 → `censorhub_cache_operations_total`；熔断器状态 → `censorhub_circuit_breaker_state`
 
-### 4.4 热更新机制 — Redis Pub/Sub
+### 4.4 热更新机制 — Redis Pub/Sub + 本地防抖
 
 频道：`censorhub:word_update`
 
 ```
-词库变更 (Create/Update/Delete)
+词库变更 (Create/Update/Delete/Import)
   │
-  ├─ 本地实例：从 DB 加载全部活跃词 → 重建 AC 自动机
+  ├─ 立即清除缓存："words:" + "filter:" 前缀（L1 + L2）
   │
-  └─ 发布消息到 Redis 频道
+  └─ 防抖 500ms（time.AfterFunc，窗口内重复触发会重置计时器）
        │
-       └─ 所有订阅实例接收 → 各自独立重建 AC 自动机
-           + 按前缀失效缓存 ("words:", "filter:")
+       └─ 从 DB 加载全部活跃词 → 本地重建 AC 自动机
+             │
+             └─ 发布消息到 Redis 频道
+                  │
+                  └─ 其它订阅实例：用带 30s 超时的 ctx 重新加载并重建
 ```
 
-特性：指数退避自动重连（1s → 30s max）、上下文取消优雅退出。
+特性：
+- 本地写路径防抖 500ms，避免批量导入触发 N 次重建
+- PubSub 订阅端指数退避自动重连（1s → 30s max），ctx 取消时优雅退出
+- 关停流程调用 `wordAppService.Close()` 停止未触发的防抖 Timer
 
 ### 4.5 应用服务
 
@@ -333,8 +341,17 @@ HTTP 请求经过以下中间件链（按执行顺序）：
 
 **API 路由组中间件**：
 
-8. **RateLimit** — 令牌桶限流（默认 1000 rps，突发 2000）
-9. **Auth** — API Key 验证（`X-API-Key` 头）
+8. **RateLimit** — 令牌桶限流，按 API Key / IP 分桶（默认每桶 1000 rps，突发 2000，10 分钟未活跃自动回收桶）
+9. **Auth** — API Key 验证（仅支持 `X-API-Key` 请求头，已禁用 query string 传递）
+
+**gRPC 拦截器栈**（`cmd/server/main.go:152-160` → `internal/interfaces/grpc/interceptor.go`）：
+
+1. **Recovery** — panic 恢复，统一返回 `codes.Internal`
+2. **Logging** — 结构化日志，记录 method / 耗时 / 错误
+3. **RateLimit** — 限流（与 HTTP 共用配置）
+4. **Auth** — `authorization` / `x-api-key` metadata 校验
+
+另外通过 `google.golang.org/grpc/health` 注册了 `grpc.health.v1.Health` 服务，支持 K8s 1.24+ 的原生 gRPC 探针。
 
 ---
 
@@ -348,16 +365,22 @@ HTTP 请求经过以下中间件链（按执行顺序）：
 3. 初始化 OpenTelemetry 追踪（→ Jaeger）
 4. 连接 MySQL + 自动迁移表结构
 5. 连接 Redis
-6. 创建 WordRepository (GORM)
-7. 创建 ACFilterEngine
-8. 创建 MultiLevelCache (L1 + L2)
-9. 创建 Redis PubSub
-10. 创建 FilterAppService + WordAppService
-11. WordAppService.InitEngine() — 从 DB 加载全部活跃词构建自动机
-12. PubSub.SubscribeWordUpdate() — 订阅热更新通知
-13. 启动 gRPC Server (goroutine)
-14. 启动 HTTP Server (goroutine)
-15. 监听 SIGINT/SIGTERM → 优雅关闭（10s 超时）
+6. 创建 WordRepository (GORM)、ACFilterEngine
+7. 创建生命周期 ctx（defer cancel），控制所有后台协程的退出
+8. 创建 MultiLevelCache (L1 + L2)、Redis PubSub
+9. 创建 FilterAppService + WordAppService
+10. WordAppService.InitEngine() — 从 DB 加载全部活跃词构建自动机
+11. PubSub.SubscribeWordUpdate() — 订阅热更新通知（回调中派生带 30s 超时的 ctx）
+12. 构建 gRPC Server：
+     - 注册 Recovery / Logging / RateLimit / Auth 四个 UnaryInterceptor
+     - 注册 grpc.health.v1.Health，`censor.v1.CensorService` 设为 SERVING
+     - 监听端口并启动（goroutine）
+13. 构建 HTTP Server（含 IdleTimeout）并启动（goroutine）
+14. 监听 SIGINT/SIGTERM，关停时：
+     a. cancel() 结束 PubSub 订阅与后台清理协程
+     b. wordAppService.Close() 停止防抖 Timer
+     c. grpcSrv.GracefulStop()，5 秒超时后兜底 grpcSrv.Stop()
+     d. httpSrv.Shutdown(10s ctx)
 ```
 
 ---
