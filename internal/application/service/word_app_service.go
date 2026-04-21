@@ -23,18 +23,30 @@ import (
 	"github.com/bhrajate/censorhub/pkg/metrics"
 )
 
-const rebuildDebounceDelay = 500 * time.Millisecond
+const (
+	rebuildDebounceDelay = 500 * time.Millisecond
+	rebuildMaxWait       = 3 * time.Second
+)
 
 // WordAppService 词条管理应用服务
 type WordAppService struct {
 	repo   repository.WordRepository
 	engine service.FilterEngine
-	cache  *cache.MultiLevelCache
-	pubsub *mq.RedisPubSub
+	cache  prefixInvalidator
+	pubsub wordUpdatePublisher
 	logger *zap.Logger
 
-	rebuildTimer *time.Timer // 防抖定时器
-	rebuildMu    sync.Mutex  // 保护 rebuildTimer
+	rebuildTimer     *time.Timer // 防抖定时器
+	firstTriggerTime time.Time   // 本轮 debounce 周期的首次触发时间，用于 max-wait 兜底
+	rebuildMu        sync.Mutex  // 保护 rebuildTimer/firstTriggerTime
+}
+
+type prefixInvalidator interface {
+	InvalidateByPrefix(ctx context.Context, prefix string) error
+}
+
+type wordUpdatePublisher interface {
+	PublishWordUpdate(ctx context.Context) error
 }
 
 // NewWordAppService 创建词条管理应用服务
@@ -246,19 +258,38 @@ func (s *WordAppService) ExportToWriter(ctx context.Context, category string, w 
 
 // triggerRebuild 触发引擎热更新（防抖：500ms 内多次调用只执行一次）
 func (s *WordAppService) triggerRebuild(ctx context.Context) {
-	// 立即清除缓存，确保后续请求不会命中旧缓存
-	s.cache.InvalidateByPrefix(ctx, "words:")
-	s.cache.InvalidateByPrefix(ctx, "filter:")
+	// 预留给词条管理接口的缓存前缀；当前项目未启用 words:* 读缓存，但保留此前缀约定
+	s.invalidatePrefix(ctx, "words:")
+	// filter 缓存要等新自动机生效后再清，避免旧结果回填
 
 	s.rebuildMu.Lock()
 	defer s.rebuildMu.Unlock()
 
-	// 重置防抖定时器：如果 500ms 内再次触发，取消前一次，重新计时
+	now := time.Now()
+	// 本轮 debounce 周期的起点：当前没有待执行的定时器时记录
+	if s.rebuildTimer == nil {
+		s.firstTriggerTime = now
+	}
+
 	if s.rebuildTimer != nil {
 		s.rebuildTimer.Stop()
 	}
 
-	s.rebuildTimer = time.AfterFunc(rebuildDebounceDelay, func() {
+	// max-wait 兜底：持续触发情况下，距离首次触发超过 rebuildMaxWait 就强制执行，避免饿死
+	delay := rebuildDebounceDelay
+	if remaining := rebuildMaxWait - now.Sub(s.firstTriggerTime); remaining < delay {
+		if remaining < 0 {
+			remaining = 0
+		}
+		delay = remaining
+	}
+
+	s.rebuildTimer = time.AfterFunc(delay, func() {
+		// 标记本轮结束，下一次 triggerRebuild 会开启新周期
+		s.rebuildMu.Lock()
+		s.rebuildTimer = nil
+		s.rebuildMu.Unlock()
+
 		rebuildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
@@ -275,11 +306,27 @@ func (s *WordAppService) triggerRebuild(ctx context.Context) {
 		metrics.EngineRebuildTotal.Inc()
 		metrics.EngineWordCount.Set(float64(s.engine.WordCount()))
 
+		s.invalidatePrefix(rebuildCtx, "filter:")
+
 		// 重建完成后通知其他实例
-		if err := s.pubsub.PublishWordUpdate(rebuildCtx); err != nil {
-			s.logger.Error("failed to publish word update", zap.Error(err))
+		if s.pubsub != nil {
+			if err := s.pubsub.PublishWordUpdate(rebuildCtx); err != nil {
+				s.logger.Error("failed to publish word update", zap.Error(err))
+			}
 		}
 	})
+}
+
+func (s *WordAppService) invalidatePrefix(ctx context.Context, prefix string) {
+	if s.cache == nil {
+		return
+	}
+	if err := s.cache.InvalidateByPrefix(ctx, prefix); err != nil {
+		s.logger.Warn("failed to invalidate cache by prefix",
+			zap.String("prefix", prefix),
+			zap.Error(err),
+		)
+	}
 }
 
 // Close 停止防抖 Timer，应在优雅关停流程中调用

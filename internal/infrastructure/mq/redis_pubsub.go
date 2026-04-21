@@ -2,8 +2,10 @@ package mq
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 )
@@ -17,21 +19,35 @@ const (
 
 // RedisPubSub Redis 发布/订阅，用于跨实例热更新通知
 type RedisPubSub struct {
-	client *redis.Client
-	logger *zap.Logger
+	client     *redis.Client
+	logger     *zap.Logger
+	instanceID string
+}
+
+type wordUpdateMessage struct {
+	Type   string `json:"type"`
+	Source string `json:"source"`
 }
 
 // NewRedisPubSub 创建 Redis PubSub
 func NewRedisPubSub(client *redis.Client, logger *zap.Logger) *RedisPubSub {
 	return &RedisPubSub{
-		client: client,
-		logger: logger,
+		client:     client,
+		logger:     logger,
+		instanceID: uuid.NewString(),
 	}
 }
 
 // PublishWordUpdate 发布词条更新通知
 func (p *RedisPubSub) PublishWordUpdate(ctx context.Context) error {
-	return p.client.Publish(ctx, WordUpdateChannel, "rebuild").Err()
+	payload, err := json.Marshal(wordUpdateMessage{
+		Type:   "rebuild",
+		Source: p.instanceID,
+	})
+	if err != nil {
+		return err
+	}
+	return p.client.Publish(ctx, WordUpdateChannel, payload).Err()
 }
 
 // SubscribeWordUpdate 订阅词条更新通知，断线自动重连（指数退避）
@@ -91,7 +107,7 @@ func (p *RedisPubSub) runSubscription(ctx context.Context, handler func()) error
 			if !ok {
 				return errChannelClosed
 			}
-			if msg.Payload == "rebuild" {
+			if p.shouldHandleWordUpdate(msg.Payload) {
 				p.logger.Info("Received word update notification, triggering rebuild")
 				handler()
 			}
@@ -99,6 +115,26 @@ func (p *RedisPubSub) runSubscription(ctx context.Context, handler func()) error
 			return ctx.Err()
 		}
 	}
+}
+
+func (p *RedisPubSub) shouldHandleWordUpdate(payload string) bool {
+	if payload == "rebuild" {
+		return true
+	}
+
+	var msg wordUpdateMessage
+	if err := json.Unmarshal([]byte(payload), &msg); err != nil {
+		p.logger.Warn("failed to parse word update payload", zap.Error(err))
+		return false
+	}
+	if msg.Type != "rebuild" {
+		return false
+	}
+	if msg.Source == p.instanceID {
+		p.logger.Debug("Skipping self-published word update")
+		return false
+	}
+	return true
 }
 
 var errChannelClosed = &subscriptionError{msg: "PubSub channel closed unexpectedly"}

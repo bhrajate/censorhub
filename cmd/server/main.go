@@ -138,6 +138,9 @@ func main() {
 			log.Error("failed to rebuild engine", zap.Error(err))
 			return
 		}
+		if err := multiCache.InvalidateByPrefix(rebuildCtx, "filter:"); err != nil {
+			log.Warn("failed to invalidate filter cache after PubSub rebuild", zap.Error(err))
+		}
 		log.Info("engine rebuilt via PubSub", zap.Int("word_count", engine.WordCount()))
 	})
 
@@ -199,8 +202,8 @@ func main() {
 	sig := <-quit
 	log.Info("Shutting down server...", zap.String("signal", sig.String()))
 
-	cancel()                 // 停止 PubSub 订阅和后台协程
-	wordAppService.Close()   // 停止防抖 Timer
+	cancel()               // 停止 PubSub 订阅和后台协程
+	wordAppService.Close() // 停止防抖 Timer
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
