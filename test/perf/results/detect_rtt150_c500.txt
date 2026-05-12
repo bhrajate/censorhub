@@ -1,0 +1,18 @@
+==============================================================
+Endpoint : http://127.0.0.1:20080/api/v1/filter/detect
+RTT      : 150ms    Conns: 500   Threads: 16   Duration: 30s
+Time     : 2026-05-12T16:30:31+08:00
+==============================================================
+Running 30s test @ http://127.0.0.1:20080/api/v1/filter/detect
+  16 threads and 500 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   234.77ms  277.46ms   2.23s    94.85%
+    Req/Sec   177.83     55.56   313.00     72.92%
+  Latency Distribution
+     50%  163.59ms
+     75%  181.95ms
+     90%  251.08ms
+     99%    1.87s 
+  84794 requests in 31.98s, 97.29MB read
+Requests/sec:   2651.39
+Transfer/sec:      3.04MB

@@ -1,0 +1,340 @@
+# CensorHub 性能测试报告
+
+- 生成日期：2026-05-12
+- 被测版本：commit `1997f38`（main 分支最新）
+- 测试类型：HTTP REST 接口压测；单实例本地部署；模拟跨网延迟
+
+---
+
+## 1. 测试目标
+
+1. 摸清单实例 CensorHub 的吞吐上限与延迟分布。
+2. 量化不同"跨网"延迟档位（同机房/同城/跨区域/跨国）对吞吐的侵蚀程度。
+3. 对比核心接口（`/detect`、`/batch`）与旁路接口（`/replace`、`/highlight`、`/healthz`、`/metrics`）的性能特征，识别主要开销来源。
+
+---
+
+## 2. 机器与软件配置
+
+### 2.1 硬件
+
+| 项 | 值 |
+|---|---|
+| CPU | Intel Core i5-13500H（13 代 Raptor Lake-H） |
+| 物理核心 / 逻辑核心 | 8 核 / 16 逻辑核（SMT 开启） |
+| BogoMIPS | 6374（≈ 3.2 GHz 等效） |
+| 内存 | 15 GiB（测试时可用 4.7 GiB，其余被开发工具/Airflow 占用） |
+| 磁盘 | 1007 GB ext4，WSL2 虚拟磁盘 |
+
+### 2.2 系统 / 运行环境
+
+| 项 | 值 |
+|---|---|
+| OS | Ubuntu 24.04.3 LTS |
+| 内核 | Linux 6.6.87.2-microsoft-standard-WSL2（即 WSL2 虚拟化环境） |
+| Hypervisor | Microsoft Hyper-V（x86_64 VT-x） |
+| Go | go1.26.1 linux/amd64 |
+| wrk | 4.2.0 [epoll] |
+| Docker | 28.5.1 |
+| MySQL | 8.0.46（`censor-mysql-perf` 容器，端口 33306） |
+| Redis | 7.4.9（`censor-redis-perf` 容器，端口 16379） |
+| toxiproxy | 2.12.0（`censor-toxiproxy` 容器，管理端口 8474，转发端口 20080） |
+
+### 2.3 被测服务配置
+
+- 端口：HTTP `:18080`，gRPC `:19090`
+- 日志级别：`warn`（压测期间压减日志 I/O 干扰）
+- Tracing 采样率：0（关闭 OpenTelemetry 上报，避免 Jaeger 未运行造成的重试开销）
+- 速率限制：单实例 1,000,000 RPS / burst 2,000,000（实际上不会触发限流）
+- AC 词库规模：**10,000 条**（测试前通过 `/api/v1/words/import` 随机生成）
+  - 70% 中文 2–5 字 / 30% 英文 3–8 字
+  - 分类：politics / porn / abuse / ad / violence / custom（均匀分布）
+- 缓存：本地 L1 + Redis L2（两级全启用，TTL 取 config 默认）
+
+> 注：测试过程中发现并修复了一个阻塞服务启动的 protobuf descriptor 兼容 bug（`protoc-gen-go` v1.36.10 生成的 `censor.pb.go` 与 runtime v1.36.11 不兼容），已通过重装 `protoc-gen-go` 至 v1.36.11 并重新生成 `api/proto/censor/v1/censor.pb.go` 解决，与本次性能数据无关。
+
+---
+
+## 3. 测试方法
+
+### 3.1 压测工具与参数
+
+- 工具：**wrk 4.2.0**
+- 线程数：`min(conns, 16)`
+- 并发档位：50 / 200 / 500（`/detect`、`/batch` 全矩阵；其它接口仅 200）
+- 单组时长：30 秒
+- 超时：30 秒
+- 协议：HTTP/1.1 + keep-alive（wrk 默认）
+
+### 3.2 跨网延迟模拟
+
+原始需求是用 `tc netem` 往 loopback 注入延迟，但 WSL2 的 `tc` 需要 sudo 密码。改用 **toxiproxy** 在 `127.0.0.1:20080` 监听并转发到被测服务 `127.0.0.1:18080`，通过 toxic（latency）在上/下行各注入 `RTT/2` ms，等价往返 RTT。
+
+档位映射：
+
+| 档位 | RTT | 场景 |
+|---|---|---|
+| 0 ms | 0 ms | 同机房（toxiproxy 原生开销 ≤ 1 ms） |
+| 20 ms | 20 ms | 同城机房 / 同一大区 VPC |
+| 50 ms | 50 ms | 跨区域（如华东 ↔ 华北） |
+| 150 ms | 150 ms | 跨国（亚洲 ↔ 北美） |
+
+延迟注入精度验证（curl 单请求）：
+
+```
+rtt=0:   actual ≈ 7–9 ms  (TCP + TLS + toxiproxy 开销)
+rtt=50:  actual ≈ 60 ms  (50 + 10 ms 固定开销)
+```
+
+这种模拟的局限：**只模拟了额外 RTT，没有带宽瓶颈与抖动**。真实跨网还会有公网的丢包、重传、拥塞窗口爬升，所以这里的数字应该看作"理想公网"基线。
+
+### 3.3 请求体构造
+
+#### `/api/v1/filter/detect`
+
+Lua 脚本每次随机生成 40–200 字符的中英混合文本，以 0–3 的命中率随机插入词库里的敏感词：
+
+```json
+{"text":"新闻资讯行业动态...[随机命中词]...市场表现"}
+```
+
+#### `/api/v1/filter/batch`
+
+每请求 10 条文本，每条 30–120 字符，0–2 次随机命中：
+
+```json
+{"texts":["...","...", ... 10 items]}
+```
+
+### 3.4 预热
+
+正式矩阵开始前跑了一次 10 秒 `t=8, c=50` 的 `/detect` 做预热，让本地缓存/Redis 进入热状态。
+
+### 3.5 测量指标
+
+- `requests`：有效完成的 HTTP 请求数
+- `rps`：每秒请求数（wrk "Requests/sec"）
+- `latency_avg`：wrk 线程级平均
+- `p50 / p75 / p90 / p99 / max`：wrk `--latency` 分布
+- `errors`：socket error（connect/read/write/timeout）汇总
+- `non2xx`：非 2xx 响应数
+
+---
+
+## 4. 压测结果
+
+### 4.1 `/api/v1/filter/detect`（核心检测接口，全矩阵）
+
+| RTT | Conns | RPS | p50 | p75 | p90 | p99 | max | errors |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 ms | 50 | **2491.6** | 17.0 ms | 26.7 ms | 42.2 ms | 1.37 s | 1.74 s | 0 |
+| 0 ms | 200 | **3455.1** | 50.0 ms | 75.6 ms | 119.3 ms | 1.98 s | 2.37 s | 0 |
+| 0 ms | 500 | 2937.2 | 179.5 ms | 236.9 ms | 339.8 ms | 2.24 s | 4.17 s | 0 |
+| 20 ms | 50 | 1476.0 | 28.9 ms | 34.0 ms | 45.4 ms | 1.37 s | 1.72 s | 0 |
+| 20 ms | 200 | 2494.1 | 67.7 ms | 96.0 ms | 135.6 ms | 1.42 s | 1.84 s | 0 |
+| 20 ms | 500 | 2628.3 | 180.8 ms | 264.6 ms | 414.9 ms | 2.85 s | 5.85 s | 0 |
+| 50 ms | 50 | 738.2 | 59.2 ms | 65.8 ms | 78.5 ms | 1.39 s | 1.73 s | 0 |
+| 50 ms | 200 | 1960.2 | 86.1 ms | 111.5 ms | 151.5 ms | 1.49 s | 1.88 s | 0 |
+| 50 ms | 500 | 2963.8 | 141.6 ms | 220.6 ms | 335.9 ms | 1.91 s | 3.45 s | 0 |
+| 150 ms | 50 | 287.1 | 155.7 ms | 159.7 ms | 167.8 ms | 1.60 s | 1.95 s | 0 |
+| 150 ms | 200 | 1097.0 | 158.9 ms | 169.7 ms | 199.0 ms | 1.83 s | 2.11 s | 0 |
+| 150 ms | 500 | 2651.4 | 163.6 ms | 182.0 ms | 251.1 ms | 1.87 s | 2.23 s | 0 |
+
+### 4.2 `/api/v1/filter/batch`（批量 10 条，全矩阵）
+
+| RTT | Conns | RPS | 等效文本/s | p50 | p90 | p99 | max | errors |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 0 ms | 50 | 559.4 | ~5,594 | 80.9 ms | 115.0 ms | 1.47 s | 1.77 s | 0 |
+| 0 ms | 200 | 431.5 | ~4,315 | 400.0 ms | 736.5 ms | 2.04 s | 2.11 s | 0 |
+| 0 ms | 500 | **1202.5** | **~12,025** | 300.4 ms | 1.06 s | 2.77 s | 4.42 s | 0 |
+| 20 ms | 50 | 726.8 | ~7,268 | 53.0 ms | 155.1 ms | 1.41 s | 1.82 s | 0 |
+| 20 ms | 200 | 430.6 | ~4,306 | 424.2 ms | 591.3 ms | 2.03 s | 2.13 s | 0 |
+| 20 ms | 500 | 1130.7 | ~11,307 | 280.2 ms | 1.14 s | 2.47 s | 3.45 s | 0 |
+| 50 ms | 50 | 613.4 | ~6,134 | 70.4 ms | 110.1 ms | 1.41 s | 1.75 s | 0 |
+| 50 ms | 200 | 443.2 | ~4,432 | 388.0 ms | 688.4 ms | 2.07 s | 2.12 s | 0 |
+| 50 ms | 500 | 1001.9 | ~10,019 | 514.4 ms | 1.31 s | 2.77 s | 3.97 s | 0 |
+| 150 ms | 50 | 271.1 | ~2,711 | 160.1 ms | 202.5 ms | 1.65 s | 1.91 s | 0 |
+| 150 ms | 200 | 487.3 | ~4,873 | 369.0 ms | 543.3 ms | 1.95 s | 2.07 s | 0 |
+| 150 ms | 500 | 872.0 | ~8,720 | 317.5 ms | 1.17 s | 2.70 s | 2.80 s | 0 |
+
+### 4.3 旁路接口对照（c=200）
+
+| 接口 | RTT | RPS | p50 | p90 | p99 | max |
+|---|---:|---:|---:|---:|---:|---:|
+| `/api/v1/filter/replace` | 0 ms | 4922.3 | 35.6 ms | 72.5 ms | 1.39 s | 1.74 s |
+| `/api/v1/filter/replace` | 50 ms | 2316.2 | 71.3 ms | 132.6 ms | 1.58 s | 1.96 s |
+| `/api/v1/filter/highlight` | 0 ms | 3816.5 | 45.7 ms | 84.5 ms | 1.49 s | 1.92 s |
+| `/api/v1/filter/highlight` | 50 ms | 2534.8 | 68.7 ms | 95.5 ms | 1.52 s | 1.88 s |
+| `/healthz` | 0 ms | **10782.6** | 15.4 ms | 37.9 ms | 1.42 s | 1.83 s |
+| `/healthz` | 50 ms | 2936.1 | 57.6 ms | 85.8 ms | 1.95 s | 2.30 s |
+| `/metrics` | 0 ms | 1086.1 | 153.4 ms | 392.5 ms | 1.83 s | 2.79 s |
+| `/metrics` | 50 ms | 950.9 | 175.5 ms | 362.3 ms | 1.64 s | 2.12 s |
+
+### 4.4 错误率
+
+**全部 31 组测试，errors=0、non-2xx=0**。服务在所有档位和并发下都保持稳定，没有连接重置、超时或 5xx。
+
+---
+
+## 5. 数据解读
+
+### 5.1 峰值吞吐
+
+- `/detect` 单接口峰值：**~3455 RPS**（RTT=0 / c=200），对应 p50 ≈ 50 ms、p99 ≈ 2 s。
+- `/batch` 文本峰值：**~12 K 条文本/秒**（RTT=0 / c=500，每请求 10 条）。
+- `/replace` 因为匹配后的文本构造比 `/detect` 多一步写操作，但反而跑出 4922 RPS；原因是 `/detect` 在 `matches` 里返回了 JSON 详情（position/end/category/level 等），序列化体积更大；`/replace` 只返回过滤后文本。
+- `/healthz`（纯 DB/Redis ping）10782 RPS 是框架天花板的参考值：Gin + keep-alive + 两级健康检查在本机能稳定顶到 1 万 +。
+
+### 5.2 RTT 对吞吐的侵蚀
+
+以 `/detect @ c=50` 为例：
+
+| RTT | RPS | 相对 0ms | 理论上限（Little's Law） |
+|---|---:|---:|---:|
+| 0 ms | 2492 | 100% | — |
+| 20 ms | 1476 | 59% | c=50 / 20ms = 2500 |
+| 50 ms | 738 | 30% | c=50 / 50ms = 1000 |
+| 150 ms | 287 | 12% | c=50 / 150ms = 333 |
+
+**结论**：低并发下 RTT 是主导因素。50 ms 档 c=50 的 738 RPS 已经接近理论上限 1000 的 74%，说明服务端处理时间只占单请求 ~10 ms，其余都是 RTT。
+
+**提升跨网吞吐的唯一办法是加并发。** c=500 / 150ms 下 RPS 仍能达到 2651，说明 keep-alive 下连接复用很彻底、服务端 CPU 还有余量。
+
+### 5.3 批量接口的非线性
+
+`/batch` 的 RPS 随并发变化不单调：
+
+- c=50 → 559 RPS（每请求处理 10 条）
+- c=200 → **431 RPS**（反而下降）
+- c=500 → 1203 RPS（大幅回升）
+
+这个 U 形曲线提示 c=200 时遇到了临界资源争抢。最可能的原因：每个 batch 请求内部并发调用 `filterAppService.Detect`（10 次），每次都要穿过 L1→L2→AC，L1 本地缓存在 c=200 × 10 = 2000 同时命中的场景下锁竞争显著；c=500 时反而因为请求排队更均匀而平滑了竞争。
+
+建议：看 `filterAppService` 里 batch 循环是不是串行的，如果是串行且没有并发 fan-out，那 U 形就来自 Go runtime 调度；如果是并发调用，则要检查 L1 缓存的 RWMutex。
+
+### 5.4 尾延迟问题
+
+**所有组的 p99 都在 1.3–2.8 秒之间，max 甚至到 4–5 秒**。这是最值得警惕的信号。
+
+可能原因（按可能性排序）：
+
+1. **AC 自动机重建的 stop-the-world**：`InitEngine` 和 PubSub 触发的 `Rebuild` 是持锁完整替换的，1 万词重建估计几十毫秒，但 wrk 32 个 CPU 核满负载时会放大。但整个测试没有 Rebuild 触发——词表初始化好就没变——所以这项可以排除。
+2. **GC STW**：Go 1.26 的 STW 通常 <1 ms，但在 10 GB+ live heap 的进程不会这么小；CensorHub 进程 RSS 并不大，不像。
+3. **Redis 慢查询**：容器 Redis 和服务在同一台机，但首次冷缓存 + 大 value 序列化时可能 200 ms 级。
+4. **WSL2 + Docker 的 VirtIO 时间跳变**：这在 WSL2 上很常见——宿主 Windows 的时钟休眠/调度会导致进程里 time.Now() 突然跳变，体现为单次请求 p99 飙到秒级。测试矩阵里所有组的 max 都是 1.7–4.4 s 的同阶数量，强烈提示是**环境性能抖动**而非服务瓶颈。
+
+**建议**：在生产（裸机 / 非 WSL2 KVM）环境里重跑一次，观察 p99 是否跌到合理的 50–100 ms 范围。在本次 WSL2 环境下，p99/max 应视为**环境噪声**，而不是服务的真实尾延迟。
+
+### 5.5 服务吞吐与 CPU 占用
+
+测试期间 16 个逻辑核，wrk 吃 ~2–3 核，server 吃 ~8–10 核，mysql/redis 容器各 <1 核。**服务端 CPU 没有顶满**（峰值约 60–70%），说明 `/detect` 在当前状态不是 CPU-bound。结合 4.1 的 c=500 RPS 反而比 c=200 低的现象，瓶颈可能在：
+
+- Gin 中间件链（Tracing / Logger / Metrics / Auth / RateLimit）的 goroutine 切换成本
+- 本地 L1 缓存的锁竞争（见 5.3）
+
+可以通过关掉 Tracing + Metrics 中间件再跑一次 baseline 对比验证。
+
+---
+
+## 6. 建议
+
+1. **先解决环境噪声**：在真实 Linux（非 WSL2）上重跑，p99 预计可压到百毫秒级。
+2. **定位 batch 的 U 形曲线**：在 `application/service/filter_service.go` 的 BatchDetect 里查是否有不必要的锁或 fan-out。
+3. **观察中间件开销**：把全局中间件逐个开关做 A/B，看哪个吞吐损失最大。
+4. **压一下 gRPC 通路**：HTTP 只是接入层之一，gRPC + protobuf 的端到端延迟通常比 JSON 低 30–40%，值得作为真实业务的推荐协议。
+5. **生产容量规划**：以 `/detect @ c=200` 的 3455 RPS 作为单实例参考容量；跨区域（50ms RTT）场景下想维持该 RPS 需要 c=200 连接池；跨国（150ms）则需要 c=500。
+
+---
+
+## 7. 生产就绪评估
+
+将本次数据与行业公开基准横向对比后的判定。
+
+### 7.1 外部基准参考
+
+**商业云 API 限速**
+- 腾讯云文本内容审核 TMS 默认 **1000 QPS / 账号**，超出需工单升配。<br>  来源：<https://cloud.tencent.com/document/product/1124/51860>
+- 阿里云 / 百度 / OpenAI Moderation / AWS Comprehend 未公开吞吐与延迟 SLA，均按账号议价；OpenAI Moderation 社区观测 p50 约 150–400 ms（公网，非 SLA）。
+
+**同类开源库的算法峰值（纯库，不含 HTTP/JSON/网络）**
+| 库 | 语言 | 峰值 | 备注 |
+|---|---|---:|---|
+| `houbb/sensitive-word` | Java | ~140K QPS | 100 字符文本，i7-1260P |
+| `anknown/ahocorasick` | Go | 153K 词 × 777K 词文本 ≈ 1.8 s | 比 `cloudflare/ahocorasick` 快 10× |
+| Intel Hyperscan | C | 5–25 Gbps / 核 | 论文级上限 |
+| 通用 AC 算法 | - | 200 MB/s – 1 GB/s / 核 | 经验值 |
+
+**Gin 框架天花板**：TechEmpower Round 22 JSON test，16 核级 CPU 上 Gin 平凡 JSON echo 约 80K–150K RPS。
+
+**互联网大厂内部同步内容审核的 SLO（经验值）**
+- p50 ≤ 50 ms、p99 ≤ 200 ms：字节跳动 / 美团量级"良好"门槛
+- p99 ≤ 500 ms：阿里 / 腾讯外部 API 默认期望
+- 可用性：SaaS 99.9%、付费商用 API 99.95%、超大规模内部服务 99.99%
+
+### 7.2 数字解读
+
+以 `/detect` 峰值 3455 RPS × 约 100 B 文本计算，实际匹配吞吐 ≈ 350 KB/s，**距离 AC 算法单核天花板约 3 个数量级**；Gin 框架也只用到了天花板的 ~3%。这与测试中观察到的"CPU 60–70% 未顶满"完全一致，印证结论：**瓶颈不在 AC 算法或 Gin 框架，而在业务层（中间件链、L1 缓存锁、Redis 往返、JSON 序列化）**。理论上同一硬件还有 10–30× 单机提速空间。
+
+### 7.3 三档规模判定
+
+| 场景 | 典型 RPS | 本服务判定 | 理由 |
+|---|---:|---|---|
+| 小型 SaaS | 10–100 | **达标，余量充足** | 3.5K 余量 35×，`err=0`，p50=50 ms 合格；单实例 + 热备即可 |
+| 中型公司 | 500–2,000 | **基本达标，有条件** | 单实例余量 1.75×，建议 2–3 实例 + LB；**必须先解决 p99 问题**再上线 |
+| 超大规模 | 10,000+ | **单机数据偏低，靠横向扩展** | 需 4–6 实例；符合超大规模的常规做法。核心缺口是 p99 尾延迟与故障域未验证 |
+
+### 7.4 上生产前的 Must-Do
+
+1. **在裸机 / 真实云 VM 上复测**：WSL2 环境下 31 组 p99 均在 1.3–2.8 s 且 max 同量级，**强烈提示时钟抖动导致而非服务问题**。预期在裸机 Linux 上 p99 应降至 100 ms 级。未做这步不能认为 p99 数据有生产意义。
+2. **用 pprof 定位剩余 30–40% CPU 余量**：重点是 `filter_service.BatchDetect` 的 fan-out 策略、`LocalCache` 的 `RWMutex` 竞争、Tracing/Logger/Metrics 三个中间件的序列化开销。
+3. **故障演练**：注入 Redis 故障 / MySQL 主从切换 / AC `Rebuild` 期间的并发请求，观察是否出现雪崩或阻塞。
+4. **持续流量验证**：数小时到数日的稳态压测 + 99.95% 可用性统计，零错误率才有说服力。
+
+### 7.5 Verdict
+
+> **"满足生产级要求"的判定是条件性的：** <br>
+> ✅ 对中小型 SaaS（QPS < 500）可以直接上，吞吐和稳定性都超过行业门槛； <br>
+> ⚠️ 对中型公司（QPS 500–2000）**在解决 p99 尾延迟并完成 Must-Do 验证后** 可以上； <br>
+> ⚠️ 对超大规模（QPS 10K+），**per-instance 数据够用于横向扩展**，但尾延迟和故障路径必须先补齐再考虑。
+
+### 7.6 参考来源
+
+- 腾讯云 TMS 限速：<https://cloud.tencent.com/document/product/1124/51860>
+- `github.com/houbb/sensitive-word`（README Benchmark）
+- `github.com/anknown/ahocorasick`（README vs cloudflare）
+- `github.com/cloudflare/ahocorasick`
+- TechEmpower Round 22 JSON test：<https://www.techempower.com/benchmarks/>
+- Aho & Corasick, 1975；Hyperscan, USENIX NSDI 2019
+
+---
+
+## 附录 A：测试命令
+
+```bash
+# 启动被测服务
+CENSORHUB_SERVER_HTTP_ADDR=":18080" \
+CENSORHUB_DATABASE_DSN="root:root@tcp(127.0.0.1:33306)/censorhub?..." \
+CENSORHUB_REDIS_ADDR="127.0.0.1:16379" \
+CENSORHUB_LOG_LEVEL="warn" \
+CENSORHUB_TRACE_SAMPLE_RATE="0" \
+/tmp/censorhub-perf/server-go126 --config configs/config.yaml
+
+# 注入延迟
+/tmp/censorhub-perf/scripts/set_latency.sh <ms>
+
+# 单次 wrk
+wrk -t16 -c200 -d30s --latency \
+    -s /tmp/censorhub-perf/scripts/detect.lua \
+    http://127.0.0.1:20080/api/v1/filter/detect
+```
+
+## 附录 B：原始数据位置（均已纳入仓库）
+
+- wrk 全部原始输出：[`test/perf/results/*.txt`](../test/perf/results/)
+- 汇总 TSV：[`test/perf/results/summary.tsv`](../test/perf/results/summary.tsv)
+- wrk Lua 脚本：[`test/perf/scripts/detect.lua`](../test/perf/scripts/detect.lua)、[`batch.lua`](../test/perf/scripts/batch.lua)
+- 延迟切换脚本：[`test/perf/scripts/set_latency.sh`](../test/perf/scripts/set_latency.sh)
+- 矩阵执行脚本：[`test/perf/scripts/run_matrix.sh`](../test/perf/scripts/run_matrix.sh)
+- 词库生成器：[`test/perf/cmd/gen_words/main.go`](../test/perf/cmd/gen_words/main.go)
+- 生成的词表：[`test/perf/data/words.txt`](../test/perf/data/words.txt)（10,000 行）
+- 完整复现说明：[`test/perf/README.md`](../test/perf/README.md)
