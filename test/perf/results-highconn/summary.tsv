@@ -1,0 +1,17 @@
+endpoint	rtt_ms	conns	threads	duration_s	requests	rps	latency_avg_ms	latency_p50_ms	latency_p75_ms	latency_p90_ms	latency_p99_ms	latency_max_ms	errors	non2xx
+http://127.0.0.1:20080/api/v1/filter/detect	0	1000	16	30	110727	3679.20	685.03ms	284.89ms	361.58ms	1.95s	6.88s	9.15s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	0	1000	16	30	24345	808.90	1.26s	1.44s	2.25s	2.63s	4.57s	5.95s	0	0
+http://127.0.0.1:20080/api/v1/filter/detect	0	2000	16	30	215592	7159.47	2.54s	120.47ms	694.34ms	10.89s	23.45s	30.07s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	0	2000	16	30	15070	468.55	3.96s	4.48s	6.30s	8.59s	10.25s	11.35s	0	0
+http://127.0.0.1:20080/api/v1/filter/detect	20	1000	16	30	186559	5726.32	424.94ms	117.19ms	316.65ms	981.34ms	4.83s	8.28s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	20	1000	16	30	15730	492.27	2.03s	2.23s	2.48s	3.13s	6.85s	7.90s	0	0
+http://127.0.0.1:20080/api/v1/filter/detect	20	2000	16	30	120133	3753.03	1.67s	476.11ms	961.29ms	6.01s	14.12s	17.59s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	20	2000	16	30	14891	464.63	4.32s	3.09s	5.52s	8.02s	15.67s	16.53s	0	0
+http://127.0.0.1:20080/api/v1/filter/detect	50	1000	16	30	118000	3920.11	493.55ms	235.82ms	329.04ms	505.57ms	6.04s	8.76s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	50	1000	16	30	16085	495.33	2.02s	2.59s	2.93s	3.36s	7.46s	8.35s	0	0
+http://127.0.0.1:20080/api/v1/filter/detect	50	2000	16	30	112564	3510.44	2.02s	490.02ms	924.37ms	7.78s	16.51s	20.41s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	50	2000	16	30	25175	784.59	2.80s	2.74s	5.19s	5.91s	12.60s	14.42s	0	0
+http://127.0.0.1:20080/api/v1/filter/detect	150	1000	16	30	113304	3565.67	451.42ms	226.55ms	328.01ms	553.94ms	4.46s	6.80s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	150	1000	16	30	21424	666.58	1.75s	1.68s	2.83s	3.62s	8.69s	10.72s	0	0
+http://127.0.0.1:20080/api/v1/filter/detect	150	2000	16	30	139881	4648.29	913.64ms	253.89ms	734.91ms	1.29s	10.70s	15.99s	0	0
+http://127.0.0.1:20080/api/v1/filter/batch	150	2000	16	30	28707	953.28	2.23s	1.53s	3.98s	5.42s	8.43s	10.39s	0	0
