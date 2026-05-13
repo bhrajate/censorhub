@@ -55,7 +55,7 @@ func (m *Middleware) Metrics() gin.HandlerFunc {
 
 // Tracing 链路追踪
 func (m *Middleware) Tracing() gin.HandlerFunc {
-	return tracingMiddleware()
+	return tracingMiddleware(m.cfg.Trace.SampleRate > 0)
 }
 
 // BodyLimit 请求体大小限制

@@ -1,0 +1,18 @@
+==============================================================
+Endpoint : http://127.0.0.1:20080/healthz
+RTT      : 0ms    Conns: 200   Threads: 16   Duration: 30s
+Time     : 2026-05-12T19:38:01+08:00
+==============================================================
+Running 30s test @ http://127.0.0.1:20080/healthz
+  16 threads and 200 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    23.96ms   45.40ms 955.24ms   98.44%
+    Req/Sec   621.92    172.38     1.57k    67.72%
+  Latency Distribution
+     50%   17.75ms
+     75%   25.54ms
+     90%   35.45ms
+     99%  161.54ms
+  294881 requests in 30.10s, 127.11MB read
+Requests/sec:   9797.48
+Transfer/sec:      4.22MB

@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"go.uber.org/zap"
@@ -119,56 +120,74 @@ func (s *FilterAppService) Highlight(ctx context.Context, req *dto.FilterRequest
 	return s.Filter(ctx, req)
 }
 
+// batchJob 单条批量任务，传递索引和原文。
+type batchJob struct {
+	idx  int
+	text string
+}
+
 // BatchDetect 批量检测
+//
+// 使用固定 worker pool + 任务 channel 代替"每 text 一个 goroutine + 信号量"，
+// 消除高 batch 下的 goroutine churn 并降低 hitNum 的互斥锁压力。
 func (s *FilterAppService) BatchDetect(ctx context.Context, req *dto.BatchFilterRequest) (*dto.BatchFilterResponse, error) {
 	strategyStr := req.Strategy
 	if strategyStr == "" {
 		strategyStr = string(valueobject.StrategyDetect)
 	}
 
-	results := make([]*dto.FilterResponse, len(req.Texts))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	hitNum := 0
-
-	// 使用 semaphore 限制并发协程数，防止大批量请求耗尽资源
-	maxWorkers := runtime.NumCPU()
-	sem := make(chan struct{}, maxWorkers)
-
-	for i, text := range req.Texts {
-		// 检查 context 是否已取消
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		default:
-		}
-
-		wg.Add(1)
-		sem <- struct{}{} // 获取信号量，达到上限时阻塞
-		go func(idx int, t string) {
-			defer wg.Done()
-			defer func() { <-sem }() // 释放信号量
-
-			r, err := s.Filter(ctx, &dto.FilterRequest{Text: t, Strategy: strategyStr})
-			if err != nil {
-				s.logger.Error("batch filter error", zap.Int("index", idx), zap.Error(err))
-				return
-			}
-			results[idx] = r
-			if r.IsHit {
-				mu.Lock()
-				hitNum++
-				mu.Unlock()
-			}
-		}(i, text)
+	n := len(req.Texts)
+	results := make([]*dto.FilterResponse, n)
+	if n == 0 {
+		return &dto.BatchFilterResponse{Results: results, Total: 0, HitNum: 0}, nil
 	}
 
+	// worker 数：受 CPU 和 batch 大小双重约束，避免小 batch 启太多闲 worker
+	workers := runtime.NumCPU()
+	if workers > n {
+		workers = n
+	}
+
+	jobs := make(chan batchJob, n)
+	var wg sync.WaitGroup
+	var hitNum int64
+
+	for range workers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for job := range jobs {
+				// 提前检查 ctx，避免 ctx 取消后仍继续过滤
+				if ctx.Err() != nil {
+					return
+				}
+				r, err := s.Filter(ctx, &dto.FilterRequest{Text: job.text, Strategy: strategyStr})
+				if err != nil {
+					s.logger.Error("batch filter error", zap.Int("index", job.idx), zap.Error(err))
+					continue
+				}
+				results[job.idx] = r
+				if r.IsHit {
+					atomic.AddInt64(&hitNum, 1)
+				}
+			}
+		}()
+	}
+
+	for i, text := range req.Texts {
+		jobs <- batchJob{idx: i, text: text}
+	}
+	close(jobs)
 	wg.Wait()
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	return &dto.BatchFilterResponse{
 		Results: results,
-		Total:   len(req.Texts),
-		HitNum:  hitNum,
+		Total:   n,
+		HitNum:  int(hitNum),
 	}, nil
 }
 

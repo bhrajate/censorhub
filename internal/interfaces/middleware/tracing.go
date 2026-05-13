@@ -7,9 +7,16 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-func tracingMiddleware() gin.HandlerFunc {
+// tracingMiddleware 返回链路追踪中间件。
+// enabled=false 时直接透传，不创建 span、不设置 header，避免在采样率为 0 的部署
+// （压测或非观测场景）上白白吃掉每请求 ~10–50 μs 的 span 分配与属性写入开销。
+func tracingMiddleware(enabled bool) gin.HandlerFunc {
+	if !enabled {
+		return func(c *gin.Context) { c.Next() }
+	}
+
+	tracer := otel.Tracer("censorhub-http")
 	return func(c *gin.Context) {
-		tracer := otel.Tracer("censorhub-http")
 		spanName := c.FullPath()
 		if spanName == "" {
 			spanName = c.Request.URL.Path
@@ -26,7 +33,6 @@ func tracingMiddleware() gin.HandlerFunc {
 
 		c.Request = c.Request.WithContext(ctx)
 
-		// 将 trace ID 设置到 context 中
 		if span.SpanContext().HasTraceID() {
 			traceID := span.SpanContext().TraceID().String()
 			c.Set("trace_id", traceID)

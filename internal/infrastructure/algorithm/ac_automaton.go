@@ -137,7 +137,8 @@ func (ac *AhoCorasick) SearchNormalized(normalized string) []valueobject.MatchIt
 
 	runes := []rune(normalized)
 
-	var results []valueobject.MatchItem
+	// 预分配命中切片容量，避免高命中率文本触发 O(log N) 次 realloc
+	results := make([]valueobject.MatchItem, 0, 16)
 	curr := ac.root
 
 	for i, r := range runes {
