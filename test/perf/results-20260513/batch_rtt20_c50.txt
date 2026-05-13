@@ -1,0 +1,18 @@
+==============================================================
+Endpoint : http://127.0.0.1:20080/api/v1/filter/batch
+RTT      : 20ms    Conns: 50   Threads: 16   Duration: 30s
+Time     : 2026-05-13T21:36:48+08:00
+==============================================================
+Running 30s test @ http://127.0.0.1:20080/api/v1/filter/batch
+  16 threads and 50 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    46.25ms   89.66ms 959.81ms   97.50%
+    Req/Sec    89.49     28.82   151.00     56.17%
+  Latency Distribution
+     50%   31.51ms
+     75%   42.06ms
+     90%   52.41ms
+     99%  627.11ms
+  43062 requests in 30.97s, 206.31MB read
+Requests/sec:   1390.39
+Transfer/sec:      6.66MB
