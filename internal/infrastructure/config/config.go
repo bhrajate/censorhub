@@ -224,6 +224,11 @@ func setDefaults(cfg *Config) {
 	if cfg.Database.ConnMaxIdleTime == 0 {
 		cfg.Database.ConnMaxIdleTime = 5 * time.Minute
 	}
+	if cfg.Redis.PoolSize == 0 {
+		// 高并发场景下，每实例 /batch 可能 fan-out 10 路 Redis GET；
+		// 默认 500 以匹配 c=500~1000 的并发需求，避免 pool 排队放大 p99
+		cfg.Redis.PoolSize = 500
+	}
 	if cfg.Cache.LocalTTL == 0 {
 		cfg.Cache.LocalTTL = 5 * time.Minute
 	}
