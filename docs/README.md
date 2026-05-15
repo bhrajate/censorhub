@@ -78,7 +78,8 @@ docs/
 
 | 文档 | 一句话 |
 |---|---|
-| [`round1-highlights-2026-05-12.md`](./performance/round1-highlights-2026-05-12.md) | 6 项锁优化的亮点叙事（含数据表与方法论），适合技术展示与简历素材 |
+| [`round1-highlights-2026-05-12.md`](./performance/round1-highlights-2026-05-12.md) | round1 6 项锁优化的亮点叙事（含数据表与方法论），适合技术展示与简历素材 |
+| [`round2-highlights-2026-05-15.md`](./performance/round2-highlights-2026-05-15.md) | round2 4 项 Redis pool / sonic / cache key 优化的亮点（含 sonic JIT 冷启动陷阱与"主动暂缓"方法学） |
 
 ### changelog/ — 变更记录
 
