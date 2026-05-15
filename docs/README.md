@@ -18,6 +18,7 @@
 docs/
 ├── README.md                    # 本文件（索引）
 ├── architecture/                # 项目概览
+├── reference/                   # 接口/配置参考手册
 ├── analysis/                    # 关键技术专题分析
 ├── performance/                 # 性能测试与优化
 │   ├── reports/                 #   不同硬件/时点的完整压测报告
@@ -36,6 +37,12 @@ docs/
 | [`project-overview.md`](./architecture/project-overview.md) | 业务背景、目标、整体功能矩阵、技术选型理由 |
 | [`architecture.md`](./architecture/architecture.md) | Clean Architecture 四层划分、组件关系、依赖方向 |
 | [`TODO.md`](./architecture/TODO.md) | 待办事项清单 |
+
+### reference/ — 接口/配置参考手册
+
+| 文档 | 一句话 |
+|---|---|
+| [`api-reference.md`](./reference/api-reference.md) | 全量接口文档：HTTP / gRPC / 运维探针，含参数、返回结构、错误码、示例 |
 
 ### analysis/ — 关键技术专题
 
