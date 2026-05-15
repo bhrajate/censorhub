@@ -1,7 +1,7 @@
 # CensorHub 性能优化待办清单
 
 - 记录日期：2026-05-12
-- 关联基线报告：[`performance-report-2026-05-12.md`](./performance-report-2026-05-12.md)
+- 关联基线报告：[`reports/baseline-i5-13500h-2026-05-12.md`](../reports/baseline-i5-13500h-2026-05-12.md)
 - 基线数据摘要：`/detect` 峰值 3455 RPS，CPU 仅 60–70% 未饱和；`/batch` 在 c=50/200/500 呈 U 形（559 → 431 → 1202）
 
 ## 审计结论

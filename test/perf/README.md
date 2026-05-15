@@ -1,6 +1,6 @@
 # CensorHub 性能测试
 
-完整报告：[`docs/performance-report-2026-05-12.md`](../../docs/performance-report-2026-05-12.md)
+完整报告：[`docs/performance/reports/baseline-i5-13500h-2026-05-12.md`](../../docs/performance/reports/baseline-i5-13500h-2026-05-12.md)
 
 ## 目录结构
 
@@ -92,14 +92,17 @@ bash test/perf/scripts/run_matrix.sh
 
 ```bash
 BASE=http://127.0.0.1:20080 DURATION=60 \
-RESULTS_DIR=test/perf/results-$(date +%Y%m%d) \
+RESULTS_DIR=test/perf/results/myrun-$(date +%Y%m%d) \
 bash test/perf/scripts/run_matrix.sh
 ```
 
 ### 6. 查看结果
 
 ```bash
-column -t -s $'\t' test/perf/results/summary.tsv | less -S
+# 已落库的轮次（按 round 子目录组织）：
+column -t -s $'\t' test/perf/results/baseline-i5-13500h/matrix.tsv | less -S
+column -t -s $'\t' test/perf/results/round1-i5-13500h/matrix.tsv  | less -S
+column -t -s $'\t' test/perf/results/round2-i5-13500h/verify-60s-matrix.tsv | less -S
 ```
 
 ## 矩阵说明

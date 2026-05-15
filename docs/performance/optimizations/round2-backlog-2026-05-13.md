@@ -6,9 +6,9 @@
   - `/detect` 在 c=2000 的 p99 爆到 23s
   - CPU 未打满的同时分配量很大
 - 关联：
-  - [`performance-report-2026-05-12.md`](./performance-report-2026-05-12.md) 第 8/9 节
-  - [`performance-optimization-backlog-2026-05-12.md`](./performance-optimization-backlog-2026-05-12.md) 第一轮
-  - [`performance-highlights-2026-05-12.md`](./performance-highlights-2026-05-12.md) 亮点汇总
+  - [`reports/round1-i5-13500h-2026-05-12.md`](../reports/round1-i5-13500h-2026-05-12.md)
+  - [`round1-backlog-2026-05-12.md`](./round1-backlog-2026-05-12.md) 第一轮
+  - [`round1-highlights-2026-05-12.md`](../round1-highlights-2026-05-12.md) 亮点汇总
 
 ## 审计输入信号
 
@@ -197,9 +197,9 @@
 
 ### 原始数据位置
 
-- R2 主矩阵：`test/perf/results-r2/summary.tsv`（33 文件）
-- R2 高并发矩阵：`test/perf/results-r2-highconn/summary.tsv`（17 文件）
-- 对比基线：`test/perf/results-opt/summary.tsv`、`test/perf/results-highconn/summary.tsv`
+- R2 主矩阵：`test/perf/results/round2-i5-13500h/first-30s-matrix.tsv`（33 文件）
+- R2 高并发矩阵：`test/perf/results/round2-i5-13500h/first-30s-highconn.tsv`（17 文件）
+- 对比基线：`test/perf/results/round1-i5-13500h/matrix.tsv`、`test/perf/results/round1-i5-13500h/highconn.tsv`
 
 ### 是否达到验收标准
 

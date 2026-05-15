@@ -1,7 +1,7 @@
 # CensorHub 性能优化亮点
 
 - 记录日期：2026-05-12
-- 关联：[`performance-report-2026-05-12.md`](./performance-report-2026-05-12.md)（基线 + 回归数据）、[`performance-optimization-backlog-2026-05-12.md`](./performance-optimization-backlog-2026-05-12.md)（完整清单）
+- 关联：[`reports/baseline-i5-13500h-2026-05-12.md`](./reports/baseline-i5-13500h-2026-05-12.md) + [`reports/round1-i5-13500h-2026-05-12.md`](./reports/round1-i5-13500h-2026-05-12.md)（基线 + 回归数据）、[`optimizations/round1-backlog-2026-05-12.md`](./optimizations/round1-backlog-2026-05-12.md)（完整清单）
 - 适用场景：项目亮点文档 / 简历技术描述 / 技术分享素材
 
 ---
@@ -283,8 +283,8 @@ func tracingMiddleware(enabled bool) gin.HandlerFunc {
 
 ## 原始数据位置
 
-- 优化前：`test/perf/results/summary.tsv` + 所有 `*.txt`（31 组 × wrk 原始输出）
-- 优化后：`test/perf/results-opt/summary.tsv` + 所有 `*.txt`（同一矩阵回归）
+- 优化前：`test/perf/results/baseline-i5-13500h/matrix.tsv` + 所有 `*.txt`（31 组 × wrk 原始输出）
+- 优化后：`test/perf/results/round1-i5-13500h/matrix.tsv` + 所有 `*.txt`（同一矩阵回归）
 - 可视化对比脚本：`test/perf/scripts/run_matrix.sh` 按同样参数运行，就能复现整张对比表
 
 ---
