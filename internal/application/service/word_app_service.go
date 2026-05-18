@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/csv"
 	"io"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -17,76 +18,127 @@ import (
 	"github.com/bhrajate/censorhub/internal/domain/service"
 	"github.com/bhrajate/censorhub/internal/domain/valueobject"
 	"github.com/bhrajate/censorhub/internal/infrastructure/algorithm"
-	"github.com/bhrajate/censorhub/internal/infrastructure/cache"
-	"github.com/bhrajate/censorhub/internal/infrastructure/mq"
 	pkgerrors "github.com/bhrajate/censorhub/pkg/errors"
 	"github.com/bhrajate/censorhub/pkg/metrics"
 )
 
-const (
-	rebuildDebounceDelay = 500 * time.Millisecond
-	rebuildMaxWait       = 3 * time.Second
-)
+// pollConfig 控制指纹轮询循环的时序参数。生产路径用 defaultPollConfig；
+// 测试可注入更短的值。
+type pollConfig struct {
+	interval        time.Duration // 两次指纹检查的基础间隔
+	jitter          time.Duration // 每次间隔上叠加的随机抖动 [0, jitter]，避免多实例同时 poll
+	queryTimeout    time.Duration // 单次指纹/重建调用的总超时
+	retryBackoff    time.Duration // 重建失败后首次重试退避（同一个 tick 内）；之后翻倍
+	maxAttempts     int           // 一次 reconcile 中 FindAllActive+Rebuild 的最大尝试数
+	shutdownTimeout time.Duration // Close 等待 pollLoop 退出的最长时间
+}
 
-// WordAppService 词条管理应用服务
-type WordAppService struct {
-	repo   repository.WordRepository
-	engine service.FilterEngine
-	cache  prefixInvalidator
-	pubsub wordUpdatePublisher
-	logger *zap.Logger
-
-	rebuildTimer     *time.Timer // 防抖定时器
-	firstTriggerTime time.Time   // 本轮 debounce 周期的首次触发时间，用于 max-wait 兜底
-	rebuildMu        sync.Mutex  // 保护 rebuildTimer/firstTriggerTime
+func defaultPollConfig() pollConfig {
+	return pollConfig{
+		interval:        500 * time.Millisecond,
+		jitter:          250 * time.Millisecond,
+		queryTimeout:    10 * time.Second,
+		retryBackoff:    200 * time.Millisecond,
+		maxAttempts:     3,
+		shutdownTimeout: 5 * time.Second,
+	}
 }
 
 type prefixInvalidator interface {
 	InvalidateByPrefix(ctx context.Context, prefix string) error
 }
 
-type wordUpdatePublisher interface {
-	PublishWordUpdate(ctx context.Context) error
+// WordAppService 词条管理应用服务。
+//
+// 引擎热更新采用"指纹 + 轮询"模型：写入路径（Create/Update/Delete/Import）只关心 DB 事务，
+// 不主动通知任何人；后台 pollLoop 周期性查询 ActiveFingerprint，发现变化则重建引擎并清缓存。
+//
+// 这套设计相对于"PubSub + debounce"的好处：
+//   - 失败自愈：任何环节失败下个 tick 自然重试，无需"重试 + 上报"的状态机
+//   - 跨实例一致性：每个实例独立判断 DB 状态，不依赖 PubSub 投递
+//   - 关停安全：进程崩溃不丢窗口数据，新实例第一次 poll 自然拉到最新
+//
+// 生命周期：NewWordAppService → Start(ctx) → ... → Close()
+type WordAppService struct {
+	repo   repository.WordRepository
+	engine service.FilterEngine
+	cache  prefixInvalidator
+	logger *zap.Logger
+	cfg    pollConfig
+
+	cancel    context.CancelFunc // pollLoop 的退出信号
+	wg        sync.WaitGroup     // 跟踪 pollLoop
+	closeOnce sync.Once          // 保证 Close 幂等
+
+	// lastFingerprint 仅由 pollLoop 单 goroutine 读写，无需锁
+	lastFingerprint repository.WordFingerprint
 }
 
-// NewWordAppService 创建词条管理应用服务
+// NewWordAppService 创建词条管理应用服务。需要调用 Start 才会开始 poll。
 func NewWordAppService(
 	repo repository.WordRepository,
 	engine service.FilterEngine,
-	cache *cache.MultiLevelCache,
-	pubsub *mq.RedisPubSub,
+	cache prefixInvalidator,
 	logger *zap.Logger,
 ) *WordAppService {
 	return &WordAppService{
 		repo:   repo,
 		engine: engine,
 		cache:  cache,
-		pubsub: pubsub,
 		logger: logger,
+		cfg:    defaultPollConfig(),
+	}
+}
+
+// Start 启动指纹轮询循环。多次调用安全（仅第一次起作用）。
+func (s *WordAppService) Start(ctx context.Context) {
+	if s.cancel != nil {
+		return
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	s.cancel = cancel
+	s.wg.Add(1)
+	go s.pollLoop(loopCtx)
+}
+
+// Close 停止后台循环。带超时兜底避免阻塞优雅关停。多次调用安全。
+//
+// 不需要"flush 待执行重建"——poll 模型下没有 debounce 窗口；进程退出后下次启动
+// InitEngine 会自动加载最新词库，新实例第一次 poll 也会拉到最新指纹。
+func (s *WordAppService) Close() {
+	s.closeOnce.Do(func() {
+		if s.cancel != nil {
+			s.cancel()
+		}
+	})
+	exited := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(exited)
+	}()
+	select {
+	case <-exited:
+	case <-time.After(s.cfg.shutdownTimeout):
+		s.logger.Warn("Close timed out waiting for pollLoop to exit")
 	}
 }
 
 func (s *WordAppService) Create(ctx context.Context, req *dto.CreateWordRequest) (*dto.WordResponse, error) {
-	// DTO -> Entity
 	word := assembler.CreateDTOToEntity(req)
 	if err := word.Validate(); err != nil {
 		return nil, pkgerrors.Wrap(pkgerrors.ErrInvalidRequest, err.Error())
 	}
 
-	// 检查重复
 	existing, err := s.repo.FindByText(ctx, word.Text)
 	if err == nil && existing != nil {
 		return nil, pkgerrors.ErrWordAlreadyExists
 	}
 
-	// 持久化
 	if err := s.repo.Create(ctx, word); err != nil {
 		return nil, err
 	}
 
-	// 触发热更新
-	s.triggerRebuild(ctx)
-
+	s.invalidatePrefix(ctx, "words:")
 	return assembler.EntityToDTO(word), nil
 }
 
@@ -99,7 +151,6 @@ func (s *WordAppService) Update(ctx context.Context, id uint64, req *dto.UpdateW
 		return nil, err
 	}
 
-	// 应用更新
 	if req.Text != nil {
 		word.Text = algorithm.NormalizeForIndex(*req.Text)
 	}
@@ -132,7 +183,7 @@ func (s *WordAppService) Update(ctx context.Context, id uint64, req *dto.UpdateW
 		return nil, err
 	}
 
-	s.triggerRebuild(ctx)
+	s.invalidatePrefix(ctx, "words:")
 	return assembler.EntityToDTO(word), nil
 }
 
@@ -149,7 +200,7 @@ func (s *WordAppService) Delete(ctx context.Context, id uint64) error {
 		return err
 	}
 
-	s.triggerRebuild(ctx)
+	s.invalidatePrefix(ctx, "words:")
 	return nil
 }
 
@@ -215,8 +266,7 @@ func (s *WordAppService) Import(ctx context.Context, req *dto.ImportRequest) (*d
 		return nil, pkgerrors.Wrap(pkgerrors.ErrImportFailed, err.Error())
 	}
 
-	s.triggerRebuild(ctx)
-
+	s.invalidatePrefix(ctx, "words:")
 	return &dto.ImportResponse{
 		Total:    len(req.Words),
 		Imported: imported,
@@ -256,65 +306,110 @@ func (s *WordAppService) ExportToWriter(ctx context.Context, category string, w 
 	return csvWriter.Error()
 }
 
-// triggerRebuild 触发引擎热更新（防抖：500ms 内多次调用只执行一次）
-func (s *WordAppService) triggerRebuild(ctx context.Context) {
-	// 预留给词条管理接口的缓存前缀；当前项目未启用 words:* 读缓存，但保留此前缀约定
-	s.invalidatePrefix(ctx, "words:")
-	// filter 缓存要等新自动机生效后再清，避免旧结果回填
+// pollLoop 是单 goroutine 指纹轮询循环。每个 tick 查一次指纹，变化则重建。
+// 所有状态都是循环局部变量，无共享内存。
+func (s *WordAppService) pollLoop(ctx context.Context) {
+	defer s.wg.Done()
 
-	s.rebuildMu.Lock()
-	defer s.rebuildMu.Unlock()
-
-	now := time.Now()
-	// 本轮 debounce 周期的起点：当前没有待执行的定时器时记录
-	if s.rebuildTimer == nil {
-		s.firstTriggerTime = now
+	// 启动时引入随机相位偏移，避免多实例同时启动后整齐同步打 DB
+	jitterRand := rand.New(rand.NewSource(time.Now().UnixNano()))
+	initialDelay := time.Duration(jitterRand.Int63n(int64(s.cfg.interval)))
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(initialDelay):
 	}
 
-	if s.rebuildTimer != nil {
-		s.rebuildTimer.Stop()
-	}
+	for {
+		s.reconcileOnce(ctx)
 
-	// max-wait 兜底：持续触发情况下，距离首次触发超过 rebuildMaxWait 就强制执行，避免饿死
-	delay := rebuildDebounceDelay
-	if remaining := rebuildMaxWait - now.Sub(s.firstTriggerTime); remaining < delay {
-		if remaining < 0 {
-			remaining = 0
+		nextWait := s.cfg.interval
+		if s.cfg.jitter > 0 {
+			nextWait += time.Duration(jitterRand.Int63n(int64(s.cfg.jitter)))
 		}
-		delay = remaining
-	}
-
-	s.rebuildTimer = time.AfterFunc(delay, func() {
-		// 标记本轮结束，下一次 triggerRebuild 会开启新周期
-		s.rebuildMu.Lock()
-		s.rebuildTimer = nil
-		s.rebuildMu.Unlock()
-
-		rebuildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		words, err := s.repo.FindAllActive(rebuildCtx)
-		if err != nil {
-			s.logger.Error("failed to load words for rebuild", zap.Error(err))
+		select {
+		case <-ctx.Done():
 			return
+		case <-time.After(nextWait):
 		}
-		if err := s.engine.Rebuild(words); err != nil {
-			s.logger.Error("failed to rebuild engine", zap.Error(err))
-			return
-		}
-		s.logger.Info("engine rebuilt", zap.Int("word_count", s.engine.WordCount()))
-		metrics.EngineRebuildTotal.Inc()
-		metrics.EngineWordCount.Set(float64(s.engine.WordCount()))
+	}
+}
 
-		s.invalidatePrefix(rebuildCtx, "filter:")
+// reconcileOnce 拉取指纹，发现变化则重建引擎、清 filter 缓存。
+// 任何环节失败：不更新 lastFingerprint，下个 tick 自然重试。
+func (s *WordAppService) reconcileOnce(parentCtx context.Context) {
+	ctx, cancel := context.WithTimeout(parentCtx, s.cfg.queryTimeout)
+	defer cancel()
 
-		// 重建完成后通知其他实例
-		if s.pubsub != nil {
-			if err := s.pubsub.PublishWordUpdate(rebuildCtx); err != nil {
-				s.logger.Error("failed to publish word update", zap.Error(err))
+	fp, err := s.repo.ActiveFingerprint(ctx)
+	if err != nil {
+		metrics.EngineFingerprintChecksTotal.WithLabelValues("error").Inc()
+		metrics.EngineRebuildFailuresTotal.WithLabelValues("fingerprint").Inc()
+		s.logger.Warn("fingerprint query failed, will retry next tick", zap.Error(err))
+		return
+	}
+	if fp == s.lastFingerprint {
+		metrics.EngineFingerprintChecksTotal.WithLabelValues("unchanged").Inc()
+		return
+	}
+	metrics.EngineFingerprintChecksTotal.WithLabelValues("changed").Inc()
+
+	if err := s.rebuildWithRetry(ctx); err != nil {
+		// 失败：不更新 lastFingerprint，下个 tick 自然再触发
+		return
+	}
+	s.lastFingerprint = fp
+
+	s.logger.Info("engine rebuilt via fingerprint poll",
+		zap.Int64("count", fp.Count),
+		zap.Uint64("max_id", fp.MaxID),
+		zap.Int("word_count", s.engine.WordCount()),
+	)
+	s.invalidatePrefix(ctx, "filter:")
+}
+
+// rebuildWithRetry 在同一个 reconcile 内最多尝试 maxAttempts 次。
+// 跨 tick 的"自愈"由外层 pollLoop 通过保留 lastFingerprint 不变实现。
+func (s *WordAppService) rebuildWithRetry(ctx context.Context) error {
+	var (
+		words []*entity.SensitiveWord
+		err   error
+	)
+	backoff := s.cfg.retryBackoff
+	for attempt := 1; attempt <= s.cfg.maxAttempts; attempt++ {
+		words, err = s.repo.FindAllActive(ctx)
+		if err == nil {
+			if err = s.engine.Rebuild(words); err == nil {
+				metrics.EngineRebuildTotal.Inc()
+				metrics.EngineWordCount.Set(float64(s.engine.WordCount()))
+				return nil
 			}
+			metrics.EngineRebuildFailuresTotal.WithLabelValues("rebuild").Inc()
+			s.logger.Error("failed to rebuild engine",
+				zap.Int("attempt", attempt),
+				zap.Int("max_attempts", s.cfg.maxAttempts),
+				zap.Error(err),
+			)
+		} else {
+			metrics.EngineRebuildFailuresTotal.WithLabelValues("load_words").Inc()
+			s.logger.Error("failed to load words for rebuild",
+				zap.Int("attempt", attempt),
+				zap.Int("max_attempts", s.cfg.maxAttempts),
+				zap.Error(err),
+			)
 		}
-	})
+
+		if attempt == s.cfg.maxAttempts {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+	}
+	return err
 }
 
 func (s *WordAppService) invalidatePrefix(ctx context.Context, prefix string) {
@@ -329,16 +424,8 @@ func (s *WordAppService) invalidatePrefix(ctx context.Context, prefix string) {
 	}
 }
 
-// Close 停止防抖 Timer，应在优雅关停流程中调用
-func (s *WordAppService) Close() {
-	s.rebuildMu.Lock()
-	defer s.rebuildMu.Unlock()
-	if s.rebuildTimer != nil {
-		s.rebuildTimer.Stop()
-	}
-}
-
-// InitEngine 应用启动时初始化引擎
+// InitEngine 应用启动时初始化引擎。同时把指纹记入 lastFingerprint，
+// 使得首次 poll 不会立即重复一次重建。
 func (s *WordAppService) InitEngine(ctx context.Context) error {
 	words, err := s.repo.FindAllActive(ctx)
 	if err != nil {
@@ -349,5 +436,12 @@ func (s *WordAppService) InitEngine(ctx context.Context) error {
 	}
 	s.logger.Info("engine initialized", zap.Int("word_count", s.engine.WordCount()))
 	metrics.EngineWordCount.Set(float64(s.engine.WordCount()))
+
+	// 用一次指纹查询同步基线；失败不致命（下次 poll 会自然 reconcile）
+	if fp, err := s.repo.ActiveFingerprint(ctx); err != nil {
+		s.logger.Warn("init fingerprint query failed, first poll will reconcile", zap.Error(err))
+	} else {
+		s.lastFingerprint = fp
+	}
 	return nil
 }

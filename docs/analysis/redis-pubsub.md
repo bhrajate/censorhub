@@ -1,10 +1,20 @@
 # Redis Pub/Sub 使用分析
 
+> ⚠️ **本文档描述的方案已于 2026-05-18 下线**。
+>
+> 跨实例热更新机制已重构为「指纹轮询（DB Fingerprint Poll）」：写入侧不再发任何通知，
+> 各实例独立轮询 DB 上 `(count, max_id, max_updated)` 指纹判断是否需要重建。
+> `internal/infrastructure/mq/` 已整体删除。
+>
+> 详见 [`docs/fixes/hot-update-poll-refactor-2026-05-18.md`](../fixes/hot-update-poll-refactor-2026-05-18.md)。
+>
+> 本文档保留作为历史方案记录，便于回顾"为什么不再用 PubSub"。
+
 ## 使用场景
 
 项目使用 Redis Pub/Sub 做**跨实例敏感词热更新通知**——当词条变更时，发布一个 `"rebuild"` 消息通知所有实例重建本地词库。
 
-相关代码：`internal/infrastructure/mq/redis_pubsub.go`
+相关代码：`internal/infrastructure/mq/redis_pubsub.go` *（已删除）*
 
 ## 当前场景适用性分析
 

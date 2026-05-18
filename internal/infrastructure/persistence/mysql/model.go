@@ -8,15 +8,19 @@ import (
 )
 
 // SensitiveWordModel GORM 数据模型
+//
+// 索引说明：
+//   - idx_status_updated(status, updated_at) 是 ActiveFingerprint poll 走 covering scan 的关键，
+//     status 单列索引保留是为了 FindAllActive 等"按 status 全量查"路径继续走原索引。
 type SensitiveWordModel struct {
 	ID        uint64    `gorm:"primaryKey;autoIncrement"`
 	Text      string    `gorm:"type:varchar(255);uniqueIndex;not null"`
 	Category  string    `gorm:"type:varchar(50);index;not null"`
 	Level     int       `gorm:"type:tinyint;default:1"`
-	Status    int       `gorm:"type:tinyint;default:1;index"`
+	Status    int       `gorm:"type:tinyint;default:1;index;index:idx_status_updated,priority:1"`
 	Tag       string    `gorm:"type:varchar(100);index"`
 	CreatedAt time.Time `gorm:"autoCreateTime"`
-	UpdatedAt time.Time `gorm:"autoUpdateTime"`
+	UpdatedAt time.Time `gorm:"autoUpdateTime;index:idx_status_updated,priority:2"`
 }
 
 func (SensitiveWordModel) TableName() string {

@@ -22,7 +22,6 @@ import (
 	"github.com/bhrajate/censorhub/internal/infrastructure/cache"
 	"github.com/bhrajate/censorhub/internal/infrastructure/config"
 	"github.com/bhrajate/censorhub/internal/infrastructure/database"
-	"github.com/bhrajate/censorhub/internal/infrastructure/mq"
 	mysqlrepo "github.com/bhrajate/censorhub/internal/infrastructure/persistence/mysql"
 	"github.com/bhrajate/censorhub/internal/infrastructure/trace"
 	grpcserver "github.com/bhrajate/censorhub/internal/interfaces/grpc"
@@ -105,9 +104,6 @@ func main() {
 	redisCache := cache.NewRedisCache(rdb, cfg.Cache.RedisTTL)
 	multiCache := cache.NewMultiLevelCache(localCache, redisCache)
 
-	// PubSub
-	pubsub := mq.NewRedisPubSub(rdb, log)
-
 	// 过滤策略
 	strategies := map[valueobject.FilterStrategyType]valueobject.FilterStrategy{
 		valueobject.StrategyDetect:    algorithm.NewDetectStrategy(),
@@ -117,32 +113,15 @@ func main() {
 
 	// 应用服务
 	filterAppService := service.NewFilterAppService(engine, strategies, multiCache, log)
-	wordAppService := service.NewWordAppService(wordRepo, engine, multiCache, pubsub, log)
+	wordAppService := service.NewWordAppService(wordRepo, engine, multiCache, log)
 
 	// 7. 初始化引擎（从 DB 加载词条）
 	if err := wordAppService.InitEngine(context.Background()); err != nil {
 		log.Fatal("failed to init engine", zap.Error(err))
 	}
 
-	// 8. 订阅热更新通知
-	pubsub.SubscribeWordUpdate(ctx, func() {
-		rebuildCtx, rebuildCancel := context.WithTimeout(ctx, 30*time.Second)
-		defer rebuildCancel()
-
-		words, err := wordRepo.FindAllActive(rebuildCtx)
-		if err != nil {
-			log.Error("failed to load words for rebuild", zap.Error(err))
-			return
-		}
-		if err := engine.Rebuild(words); err != nil {
-			log.Error("failed to rebuild engine", zap.Error(err))
-			return
-		}
-		if err := multiCache.InvalidateByPrefix(rebuildCtx, "filter:"); err != nil {
-			log.Warn("failed to invalidate filter cache after PubSub rebuild", zap.Error(err))
-		}
-		log.Info("engine rebuilt via PubSub", zap.Int("word_count", engine.WordCount()))
-	})
+	// 启动 wordAppService 的指纹轮询循环（写入接口可达前必须启动）
+	wordAppService.Start(ctx)
 
 	// 9. HTTP handler
 	filterHandler := handler.NewFilterHandler(filterAppService)

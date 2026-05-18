@@ -133,6 +133,35 @@ func (r *wordRepo) FindInBatches(ctx context.Context, category *valueobject.Cate
 	return result.Error
 }
 
+// ActiveFingerprint 在 idx_status_updated covering index 上一次完成 (count, max_id, max_updated)。
+// 即使 100 万行级别也应在亚毫秒返回。
+func (r *wordRepo) ActiveFingerprint(ctx context.Context) (repository.WordFingerprint, error) {
+	var row struct {
+		Cnt       int64
+		MaxID     *uint64
+		MaxUpdMic *int64
+	}
+	// COALESCE 兜底空表场景；UNIX_TIMESTAMP 用 6 位精度避免同秒误判
+	err := r.db.WithContext(ctx).
+		Model(&SensitiveWordModel{}).
+		Select(`COUNT(*) AS cnt,
+		        MAX(id) AS max_id,
+		        CAST(COALESCE(UNIX_TIMESTAMP(MAX(updated_at)) * 1000000, 0) AS SIGNED) AS max_upd_mic`).
+		Where("status = ?", 1).
+		Scan(&row).Error
+	if err != nil {
+		return repository.WordFingerprint{}, err
+	}
+	fp := repository.WordFingerprint{Count: row.Cnt}
+	if row.MaxID != nil {
+		fp.MaxID = *row.MaxID
+	}
+	if row.MaxUpdMic != nil {
+		fp.MaxUpdatedUnixMicro = *row.MaxUpdMic
+	}
+	return fp, nil
+}
+
 func (r *wordRepo) BatchCreate(ctx context.Context, words []*entity.SensitiveWord) (int, error) {
 	if len(words) == 0 {
 		return 0, nil

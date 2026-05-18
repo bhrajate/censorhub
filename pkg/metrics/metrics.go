@@ -47,4 +47,24 @@ var (
 			Help: "Total number of engine rebuilds",
 		},
 	)
+
+	// EngineRebuildFailuresTotal 引擎重建失败次数（按阶段拆分），重试每次失败均会计数
+	// stage: fingerprint / load_words / rebuild
+	EngineRebuildFailuresTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "censorhub_engine_rebuild_failures_total",
+			Help: "Total engine rebuild failures by stage (each retry attempt counted)",
+		},
+		[]string{"stage"},
+	)
+
+	// EngineFingerprintChecksTotal 指纹 poll 总次数，按结果区分
+	// result: unchanged / changed / error
+	EngineFingerprintChecksTotal = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "censorhub_engine_fingerprint_checks_total",
+			Help: "Total fingerprint poll checks by outcome",
+		},
+		[]string{"result"},
+	)
 )

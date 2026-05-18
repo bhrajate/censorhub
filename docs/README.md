@@ -50,7 +50,7 @@ docs/
 |---|---|
 | [`cache-consistency.md`](./analysis/cache-consistency.md) | L1+L2 多级缓存与 MySQL 主存的一致性策略 |
 | [`circuit-breaker.md`](./analysis/circuit-breaker.md) | 三态熔断器（closed/open/half-open）的设计原理与状态机 |
-| [`redis-pubsub.md`](./analysis/redis-pubsub.md) | 多实例间词库变更广播 + 防抖批量合并 |
+| [`redis-pubsub.md`](./analysis/redis-pubsub.md) | ⚠️ **已废弃**：原跨实例热更新广播方案。新方案见 [`fixes/hot-update-poll-refactor-2026-05-18.md`](./fixes/hot-update-poll-refactor-2026-05-18.md) |
 
 ### performance/ — 性能测试与优化
 
@@ -92,7 +92,8 @@ docs/
 
 | 文档 | 一句话 |
 |---|---|
-| [`hot-update-fix-2026-04-21.md`](./fixes/hot-update-fix-2026-04-21.md) | 热更新链路 race 修复记录 |
+| [`hot-update-fix-2026-04-21.md`](./fixes/hot-update-fix-2026-04-21.md) | 热更新链路 race 修复记录（在原 PubSub + Debounce 方案内堵漏） |
+| [`hot-update-poll-refactor-2026-05-18.md`](./fixes/hot-update-poll-refactor-2026-05-18.md) | 热更新机制重构：从「PubSub + 防抖」改为「DB 指纹轮询」，删除 mq 模块 |
 
 ### interview/ — 求职辅助
 
