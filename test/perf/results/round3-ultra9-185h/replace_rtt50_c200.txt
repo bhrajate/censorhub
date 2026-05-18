@@ -1,0 +1,18 @@
+==============================================================
+Endpoint : http://127.0.0.1:20080/api/v1/filter/replace
+RTT      : 50ms    Conns: 200   Threads: 16   Duration: 30s
+Time     : 2026-05-18T21:10:13+08:00
+==============================================================
+Running 30s test @ http://127.0.0.1:20080/api/v1/filter/replace
+  16 threads and 200 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency    57.35ms    4.33ms 121.91ms   80.40%
+    Req/Sec   209.54     15.33   242.00     77.72%
+  Latency Distribution
+     50%   56.35ms
+     75%   59.51ms
+     90%   62.31ms
+     99%   72.01ms
+  100511 requests in 30.10s, 109.33MB read
+Requests/sec:   3339.31
+Transfer/sec:      3.63MB

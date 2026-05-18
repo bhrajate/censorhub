@@ -1,0 +1,18 @@
+==============================================================
+Endpoint : http://127.0.0.1:20080/metrics
+RTT      : 50ms    Conns: 200   Threads: 16   Duration: 30s
+Time     : 2026-05-18T21:11:50+08:00
+==============================================================
+Running 30s test @ http://127.0.0.1:20080/metrics
+  16 threads and 200 connections
+  Thread Stats   Avg      Stdev     Max   +/- Stdev
+    Latency   131.13ms   49.87ms 480.53ms   72.89%
+    Req/Sec    92.19     33.24   232.00     72.23%
+  Latency Distribution
+     50%  119.74ms
+     75%  156.89ms
+     90%  198.91ms
+     99%  289.76ms
+  44111 requests in 30.09s, 1.25GB read
+Requests/sec:   1465.79
+Transfer/sec:     42.46MB
