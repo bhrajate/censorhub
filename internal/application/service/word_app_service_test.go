@@ -91,6 +91,7 @@ type fakeFilterEngine struct {
 	mu         sync.Mutex
 	rebuilds   int
 	rebuildErr error // 若非 nil，Rebuild 始终返回该错误
+	version    uint64
 }
 
 func (f *fakeFilterEngine) Match(string) domainservice.MatchResult {
@@ -101,10 +102,20 @@ func (f *fakeFilterEngine) Rebuild([]*entity.SensitiveWord) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rebuilds++
-	return f.rebuildErr
+	if f.rebuildErr != nil {
+		return f.rebuildErr
+	}
+	f.version++
+	return nil
 }
 
 func (f *fakeFilterEngine) WordCount() int { return 0 }
+
+func (f *fakeFilterEngine) Version() uint64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.version
+}
 
 func (f *fakeFilterEngine) rebuildsObserved() int {
 	f.mu.Lock()

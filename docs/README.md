@@ -94,6 +94,7 @@ docs/
 |---|---|
 | [`hot-update-fix-2026-04-21.md`](./fixes/hot-update-fix-2026-04-21.md) | 热更新链路 race 修复记录（在原 PubSub + Debounce 方案内堵漏） |
 | [`hot-update-poll-refactor-2026-05-18.md`](./fixes/hot-update-poll-refactor-2026-05-18.md) | 热更新机制重构：从「PubSub + 防抖」改为「DB 指纹轮询」，删除 mq 模块 |
+| [`filter-cache-race-2026-05-18.md`](./fixes/filter-cache-race-2026-05-18.md) | Filter cache 用 engine_version 拼 key，消除 `InvalidateByPrefix(SCAN)` 在并发写入下漏清的潜伏 race |
 
 ### interview/ — 求职辅助
 

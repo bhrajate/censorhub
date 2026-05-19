@@ -11,8 +11,9 @@ import (
 // ACFilterEngine 基于 AC 自动机的过滤引擎实现
 // 使用 atomic.Value 实现无锁读 + 安全热更新
 type ACFilterEngine struct {
-	current atomic.Value // *AhoCorasick
-	mu      sync.Mutex   // 防止并发重建
+	current atomic.Value  // *AhoCorasick
+	version atomic.Uint64 // 单调递增,Rebuild 成功后 +1;给 filter cache key 用
+	mu      sync.Mutex    // 防止并发重建
 }
 
 // NewACFilterEngine 创建过滤引擎实例
@@ -52,7 +53,8 @@ func (e *ACFilterEngine) Rebuild(words []*entity.SensitiveWord) error {
 	}
 
 	newAC := NewAhoCorasick(entries)
-	e.current.Store(newAC) // 原子替换，读不阻塞
+	e.current.Store(newAC)  // 原子替换，读不阻塞
+	e.version.Add(1)         // 版本号 +1,通知上层 cache 旧 key 已过期
 	return nil
 }
 
@@ -60,4 +62,10 @@ func (e *ACFilterEngine) Rebuild(words []*entity.SensitiveWord) error {
 func (e *ACFilterEngine) WordCount() int {
 	ac := e.current.Load().(*AhoCorasick)
 	return ac.WordCount()
+}
+
+// Version 当前引擎版本号(单调递增,Rebuild 成功后 +1)。
+// 注:NewACFilterEngine 创建后未调用 Rebuild 时 Version=0。
+func (e *ACFilterEngine) Version() uint64 {
+	return e.version.Load()
 }

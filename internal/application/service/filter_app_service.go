@@ -63,16 +63,22 @@ func NewFilterAppService(
 
 // filterCacheKey 生成过滤结果缓存 key（使用 FNV 非密码学哈希，性能优于 SHA256）
 //
-// 用 strings.Builder 预分配 32 字节（"filter:" 7 + strategy 最长 9 + ":" 1 + base36 13 ≈ 30），
-// 单次分配完成，避免原来 `+ + +` 产生的 2–3 次中间字符串分配。
-func filterCacheKey(text string, strategy string) string {
+// key 格式:filter:<strategy>:v<engine_version>:<text_hash>
+// engine_version 让旧版本的 cache 在引擎 Rebuild 后逻辑失效,
+// 不再依赖 InvalidateByPrefix(SCAN) 的并发可见性保证。
+//
+// 用 strings.Builder 预分配 48 字节（"filter:" 7 + strategy 最长 9 + ":v" 2 + version base36 13 + ":" 1 + hash base36 13 ≈ 45），
+// 单次分配完成。
+func filterCacheKey(text string, strategy string, engineVersion uint64) string {
 	h := fnv.New64a()
 	h.Write([]byte(text))
 
 	var b strings.Builder
-	b.Grow(32)
+	b.Grow(48)
 	b.WriteString("filter:")
 	b.WriteString(strategy)
+	b.WriteString(":v")
+	b.WriteString(strconv.FormatUint(engineVersion, 36))
 	b.WriteByte(':')
 	b.WriteString(strconv.FormatUint(h.Sum64(), 36))
 	return b.String()
@@ -91,8 +97,11 @@ func (s *FilterAppService) Filter(ctx context.Context, req *dto.FilterRequest) (
 		}
 	}
 
-	// 查缓存
-	cacheKey := filterCacheKey(req.Text, string(strategyType))
+	// 查缓存(注:engine.Version() 必须在 Match 之前先取,且 Match 同样使用这个版本快照下的引擎,
+	// 否则可能 cache key 标 v=N 但实际匹配用的是 v=N+1 的引擎,造成"标错版本"——
+	// atomic.Value 的 Load 一次后引用不变,这里调用顺序保证了一致)
+	engineVersion := s.engine.Version()
+	cacheKey := filterCacheKey(req.Text, string(strategyType), engineVersion)
 	if s.cache != nil {
 		if data, err := s.cache.Get(ctx, cacheKey); err == nil {
 			var cached dto.FilterResponse

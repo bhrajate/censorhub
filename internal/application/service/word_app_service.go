@@ -337,18 +337,36 @@ func (s *WordAppService) pollLoop(ctx context.Context) {
 
 // reconcileOnce 拉取指纹，发现变化则重建引擎、清 filter 缓存。
 // 任何环节失败：不更新 lastFingerprint，下个 tick 自然重试。
+//
+// 关键不变式：lastFingerprint 必须 ≤ 引擎当前已加载词条对应的指纹（即 lastFingerprint
+// 反映的是"引擎里最迟也包含哪些词"）。如果 lastFingerprint 反而比引擎"领先"，下次
+// 比对时就会跳过重建，造成漏更新。
+//
+// 实现做法：
+//   1. 取一次指纹 fp_before
+//   2. fp_before == lastFingerprint → 跳过
+//   3. rebuild（FindAllActive + engine.Rebuild）
+//   4. lastFingerprint = fp_before
+//
+// 第 4 步只用 fp_before 而不是 rebuild 之后再取一次新指纹：
+// 因为 rebuild 期间可能有并发 INSERT（fp_after 可能 > fp_before），但这些新数据
+// **不在** FindAllActive 拿到的快照里。如果用 fp_after 当 lastFingerprint，下次比对
+// 就会跳过这些新数据 → 漏更新。
+//
+// 用 fp_before 是保守的下界：可能轻微"低估"引擎实际包含的数据，但下次 reconcile
+// 会因 fp_after != fp_before 立即触发重建，把刚漏掉的写入扫进来。
 func (s *WordAppService) reconcileOnce(parentCtx context.Context) {
 	ctx, cancel := context.WithTimeout(parentCtx, s.cfg.queryTimeout)
 	defer cancel()
 
-	fp, err := s.repo.ActiveFingerprint(ctx)
+	fpBefore, err := s.repo.ActiveFingerprint(ctx)
 	if err != nil {
 		metrics.EngineFingerprintChecksTotal.WithLabelValues("error").Inc()
 		metrics.EngineRebuildFailuresTotal.WithLabelValues("fingerprint").Inc()
 		s.logger.Warn("fingerprint query failed, will retry next tick", zap.Error(err))
 		return
 	}
-	if fp == s.lastFingerprint {
+	if fpBefore == s.lastFingerprint {
 		metrics.EngineFingerprintChecksTotal.WithLabelValues("unchanged").Inc()
 		return
 	}
@@ -358,11 +376,12 @@ func (s *WordAppService) reconcileOnce(parentCtx context.Context) {
 		// 失败：不更新 lastFingerprint，下个 tick 自然再触发
 		return
 	}
-	s.lastFingerprint = fp
+	// 关键：用 fp_before 而非 rebuild 之后重新拿的指纹，避免漏掉 rebuild 期间的并发写入
+	s.lastFingerprint = fpBefore
 
 	s.logger.Info("engine rebuilt via fingerprint poll",
-		zap.Int64("count", fp.Count),
-		zap.Uint64("max_id", fp.MaxID),
+		zap.Int64("count", fpBefore.Count),
+		zap.Uint64("max_id", fpBefore.MaxID),
 		zap.Int("word_count", s.engine.WordCount()),
 	)
 	s.invalidatePrefix(ctx, "filter:")

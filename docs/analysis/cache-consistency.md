@@ -1,5 +1,13 @@
 # 多级缓存与数据库的数据一致性分析
 
+> ⚠️ **本文档描述的"先写库 → 立即清缓存 → 防抖重建"流程已于 2026-05-18 废止**。
+>
+> 新机制：
+> - 热更新机制改为 DB 指纹轮询，写入路径不再触发任何缓存失效，详见 [`docs/fixes/hot-update-poll-refactor-2026-05-18.md`](../fixes/hot-update-poll-refactor-2026-05-18.md)
+> - filter cache key 现在带 `engine_version`，引擎重建后旧 cache 自然失效，不再依赖 `InvalidateByPrefix(SCAN)`，详见 [`docs/fixes/filter-cache-race-2026-05-18.md`](../fixes/filter-cache-race-2026-05-18.md)
+>
+> 本文档保留分析 L1/L2 多级缓存的一般性一致性原理，但**具体实现细节请以最新的两份 fixes 文档为准**。
+
 ## 项目缓存架构
 
 ```

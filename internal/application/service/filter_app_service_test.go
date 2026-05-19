@@ -134,3 +134,32 @@ func TestFilterAppService_EngineWordCount(t *testing.T) {
 		t.Errorf("expected 2 words, got %d", svc.EngineWordCount())
 	}
 }
+
+// 验证 cache key 包含 engine version：引擎重建后,同一段文本产生的 cache key 必须不同。
+// 这是 hot-update poll 模型下消除 InvalidateByPrefix(SCAN) race 的核心保证。
+func TestFilterAppService_CacheKeyChangesAfterRebuild(t *testing.T) {
+	const text = "这是赌博内容"
+	const strategy = "detect"
+
+	engine := algorithm.NewACFilterEngine()
+	engine.Rebuild([]*entity.SensitiveWord{
+		{ID: 1, Text: "赌博", Category: valueobject.CategoryViolence, Level: valueobject.RiskHigh, Status: valueobject.WordStatusActive},
+	})
+
+	v1 := engine.Version()
+	key1 := filterCacheKey(text, strategy, v1)
+
+	// 重建一次,版本号必须 +1
+	engine.Rebuild([]*entity.SensitiveWord{
+		{ID: 1, Text: "赌博", Category: valueobject.CategoryViolence, Level: valueobject.RiskHigh, Status: valueobject.WordStatusActive},
+		{ID: 2, Text: "色情", Category: valueobject.CategoryPorn, Level: valueobject.RiskCritical, Status: valueobject.WordStatusActive},
+	})
+	v2 := engine.Version()
+	if v2 != v1+1 {
+		t.Fatalf("expected engine version to increment by 1, got v1=%d v2=%d", v1, v2)
+	}
+	key2 := filterCacheKey(text, strategy, v2)
+	if key1 == key2 {
+		t.Fatalf("cache key must change after rebuild, both = %q", key1)
+	}
+}

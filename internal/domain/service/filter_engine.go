@@ -21,4 +21,9 @@ type FilterEngine interface {
 
 	// WordCount 当前加载的词条数
 	WordCount() int
+
+	// Version 返回引擎当前版本号；每次 Rebuild 成功必然递增。
+	// 上层用它给 filter cache key 加版本号，引擎一更新所有旧 cache 自然失效，
+	// 避免 InvalidateByPrefix(SCAN) 在并发写入下漏清的 race。
+	Version() uint64
 }
