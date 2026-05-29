@@ -101,7 +101,8 @@ docs/
 | 文档 | 一句话 |
 |---|---|
 | [`resume.md`](./interview/resume.md) | 项目在简历上的多档写法（精简 / 标准 / 详细） |
-| [`interview.md`](./interview/interview.md) | 面试逐字稿（STAR 原则） |
+| [`interview.md`](./interview/interview.md) | 面试逐字稿（STAR 原则），12-15 分钟完整讲述版 |
+| [`qa/`](./interview/qa/) | **简历亮点逐条问答库**（9 篇分主题文档，覆盖算法 / 架构演进 / 缓存熔断 / 并发优化 / 归一化 / 工程化 / 云原生 / 反思权衡） |
 
 ---
 
