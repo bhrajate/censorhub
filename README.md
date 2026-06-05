@@ -13,7 +13,7 @@
 | RPC 框架 | gRPC + Protobuf |
 | 数据库 | MySQL 8.0（GORM） |
 | 缓存 | Redis 7 (L2) + 本地内存 (L1) |
-| 消息同步 | Redis Pub/Sub |
+| 多实例同步 | DB 指纹轮询（fingerprint polling） |
 | 日志 | Zap（结构化 JSON） |
 | 链路追踪 | OpenTelemetry → Jaeger |
 | 指标监控 | Prometheus + Grafana |
@@ -78,7 +78,6 @@ censorhub/
 │   │   ├── cache/                #   多级缓存 (LocalCache + RedisCache + MultiLevelCache)
 │   │   ├── database/             #   MySQL / Redis 连接初始化
 │   │   ├── persistence/mysql/    #   WordRepository MySQL 实现 + 数据模型 + 自动迁移
-│   │   ├── mq/                   #   Redis Pub/Sub 跨实例消息广播
 │   │   ├── config/               #   Viper 配置加载 (base → env → 环境变量)
 │   │   └── trace/                #   OpenTelemetry 初始化
 │   └── interfaces/               # 接口适配层 — 外部接入
@@ -137,15 +136,21 @@ FilterResult (原文、过滤结果、命中数、风险等级、耗时)
 管理员 CRUD 操作 (新增/修改/删除敏感词)
     │
     ▼
-WordAppService → MySQL 持久化
+WordAppService → MySQL 持久化  (唯一事实来源)
+
+────────────────────────────────────────────────
+每个实例独立轮询，自愈式同步（无 PubSub 投递依赖）：
+
+pollLoop (基础间隔 500ms + 抖动 [0,250ms])
     │
-    ├──→ 从 DB 加载全部活跃词
-    ├──→ 原子重建 AC 自动机 (atomic.Value 无锁读)
-    ├──→ 清除多级缓存
-    └──→ Redis Pub/Sub 广播 "word_update" 事件
-              │
-              ▼
-         其他实例收到事件 → 各自重建 AC 自动机
+    ├──→ repo.ActiveFingerprint()  指纹三元组 (Count, MaxID, MaxUpdatedUnixMicro)
+    │
+    ├──→ 指纹未变 → 跳过
+    │
+    └──→ 指纹变化 → rebuildWithRetry()
+              ├──→ 从 DB 加载全部活跃词
+              ├──→ 原子重建 AC 自动机 (atomic.Value 无锁读) + engine.Version()+1
+              └──→ 旧版本 filter 缓存随 cache key 中的 version 自动失效
 ```
 
 ### 3. 多级缓存策略
@@ -158,6 +163,10 @@ WordAppService → MySQL 持久化
     ├──→ L2 Redis 缓存命中? (TTL 30min) → 回填 L1 → 返回
     │
     └──→ 执行实际过滤 → 写入 L1 + L2 → 返回
+
+cache key 形如 filter:<strategy>:v<engine_version>:<text_hash>
+词库热更新使 engine_version 自增，旧版本缓存项永不被命中（正确性保证）；
+重建后仍清一次 filter: 前缀，仅作旧 key 的内存回收兜底。
 ```
 
 ## API 接口
@@ -317,6 +326,6 @@ K8s 部署包含：Deployment、Service、Ingress、HPA（自动扩缩容）、C
 - **无锁热更新**：通过 `atomic.Value` 原子替换自动机实例，读操作零阻塞
 - **策略模式**：过滤策略可插拔，易于扩展新策略
 - **多级缓存**：L1 本地 + L2 Redis，减少重复计算
-- **多实例同步**：Redis Pub/Sub 广播词库变更，所有节点实时生效
+- **多实例同步**：各实例定期轮询 DB 指纹，变化时独立重建自动机，自愈且无单点投递依赖
 - **Unicode 归一化**：NFKC 标准化 + 零宽字符清除 + 全半角转换，防止变体绕过
 - **可观测性**：结构化日志 + Prometheus 指标 + OpenTelemetry 分布式追踪

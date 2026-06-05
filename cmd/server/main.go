@@ -181,8 +181,8 @@ func main() {
 	sig := <-quit
 	log.Info("Shutting down server...", zap.String("signal", sig.String()))
 
-	cancel()               // 停止 PubSub 订阅和后台协程
-	wordAppService.Close() // 停止防抖 Timer
+	cancel()               // 停止指纹轮询和后台协程
+	wordAppService.Close() // 停止 pollLoop
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
