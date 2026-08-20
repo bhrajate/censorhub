@@ -25,7 +25,6 @@ docs/
 │   ├── optimizations/           #   优化清单与变更记录
 │   └── round*-highlights-*.md   #   各轮亮点汇总（面向技术展示）
 ├── fixes/                       # 重大问题修复与变更记录
-└── interview/                   # 求职相关（简历/面试稿）
 ```
 
 ## 各分类详情
@@ -95,14 +94,6 @@ docs/
 | [`hot-update-fix-2026-04-21.md`](./fixes/hot-update-fix-2026-04-21.md) | 热更新链路 race 修复记录（在原 PubSub + Debounce 方案内堵漏） |
 | [`hot-update-poll-refactor-2026-05-18.md`](./fixes/hot-update-poll-refactor-2026-05-18.md) | 热更新机制重构：从「PubSub + 防抖」改为「DB 指纹轮询」，删除 mq 模块 |
 | [`filter-cache-race-2026-05-18.md`](./fixes/filter-cache-race-2026-05-18.md) | Filter cache 用 engine_version 拼 key，消除 `InvalidateByPrefix(SCAN)` 在并发写入下漏清的潜伏 race |
-
-### interview/ — 求职辅助
-
-| 文档 | 一句话 |
-|---|---|
-| [`resume.md`](./interview/resume.md) | 项目在简历上的多档写法（精简 / 标准 / 详细） |
-| [`interview.md`](./interview/interview.md) | 面试逐字稿（STAR 原则），12-15 分钟完整讲述版 |
-| [`qa/`](./interview/qa/) | **简历亮点逐条问答库**（9 篇分主题文档，覆盖算法 / 架构演进 / 缓存熔断 / 并发优化 / 归一化 / 工程化 / 云原生 / 反思权衡） |
 
 ---
 
